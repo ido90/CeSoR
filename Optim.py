@@ -83,7 +83,8 @@ class Optimizer:
 
         if not self.is_cvar:
             self.samples_per_step.append(1)
-            self.eff_samples_per_step.append(1/(w**2).sum()/len(w))
+            self.eff_samples_per_step.append(
+                (1/(w**2).sum()/len(w)).cpu().detach().numpy())
             # optimize E[score]
             if self.episodic_loss:
                 if self.normalize_rets:
@@ -117,7 +118,8 @@ class Optimizer:
                     q, i0 = get_quantile(scores, self.alpha, w)
             self.samples_per_step.append((i0+1)/len(scores))
             self.eff_samples_per_step.append(
-                np.sum(w[:i0+1])**2/np.sum(np.array(w[:i0+1])**2)/len(scores))
+                (np.sum(w[:i0+1])**2/np.sum(np.array(w[:i0+1])**2)/len(scores)
+                 ).cpu().detach().numpy())
             # derive loss
             loss = torch.stack([-log_probs[i] * (scores[i]-q) \
                                 for i in range(i0+1)], 0).mean()

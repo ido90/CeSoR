@@ -510,7 +510,9 @@ class Experiment:
                 self.samples_usage[agent_nm] = d[2]
                 self.eff_samples_usage[agent_nm] = d[3]
                 self.ce_history[agent_nm] = d[4]
-                self.agents[agent_nm] = d[5]
+                # update agent
+                self.agents[agent_nm].load()
+                self.agents[agent_nm].n_updates = d[0].ag_updates.values[-1] + 1
 
     @staticmethod
     def train_agent_wrapper(q, E, agent_nm, kwargs):
@@ -524,7 +526,6 @@ class Experiment:
                 E.samples_usage[agent_nm],
                 E.eff_samples_usage[agent_nm],
                 E.ce_history[agent_nm],
-                E.agents[agent_nm],
             )))
             print(f'Error in {agent_nm}.')
             raise
@@ -534,7 +535,6 @@ class Experiment:
             E.samples_usage[agent_nm],
             E.eff_samples_usage[agent_nm],
             E.ce_history[agent_nm],
-            E.agents[agent_nm],
         )))
 
     def train_agent(self, agent_nm, log_freq=None, verbose=1, **kwargs):
