@@ -26,7 +26,8 @@ class RoomsEnv(core.Env):
         self.kill_prob = kill_prob
         self.detailed_r = detailed_r
         self.rows, self.cols = rows, cols
-        self.max_steps = 6 * (rows + cols) if max_steps is None else max_steps
+        self.L = 2 * self.rows
+        self.max_steps = 8*self.L if max_steps is None else max_steps
         self.force_motion = force_motion
 
         n_channels = 2 + goal_in_state
@@ -136,7 +137,8 @@ class RoomsEnv(core.Env):
                 r = -np.linalg.norm(np.abs(self.state_cell - self.goal_cell), ord=1) \
                     / (self.rows + self.cols)
         else:
-            r = 0 if done else -1
+            r = 1*self.L if done else (
+                -1 if self.nsteps<2*self.L else 0)
 
         if self.force_motion and not moved:
             r -= 1
@@ -144,7 +146,7 @@ class RoomsEnv(core.Env):
         if self.kill_prob and not self.killed:
             if self.is_kill_zone() or self.is_kill_zone(mid_cell):
                 if self.rng.random() < self.kill_prob:
-                    r -= 2*self.max_steps
+                    r -= 4*self.L
                     self.killed = True
 
         return r
@@ -273,7 +275,7 @@ class RoomsEnv(core.Env):
         map[:, -1:] = 1
         # inner walls
         # map[:W//2, H//2-1:H//2+1] = 1
-        map[W//4:3*W//4, 3*H//4-1:3*H//4] = 1
+        map[W//4+1:3*W//4, 3*H//4-1:3*H//4] = 1
         map[3*W//4-1:3*W//4, H//4:3*H//4] = 1
         # kill zone
         if self.kill_prob:
@@ -283,3 +285,26 @@ class RoomsEnv(core.Env):
 
     def render(self, mode='human', close=False):
         return 0
+
+def _evaluate_strategies(n=8):
+    pk = np.arange(0,1.01,0.01) # kill probabilities
+    L = 2 * n # going from one end to the other
+    max_cost = 2 * L
+    g = 1
+    k = 4
+
+    # costs of different strategies
+    stay = max_cost + 0*pk # staying out of trouble
+    late_reach = max_cost -g*L + 0*pk # random walk to the goal
+    long = 3*(n-2)*1 - g*L + 0*pk # long way to the goal
+    greed = 1.2*(n-2)*1 - g*L + k*L*pk # short (and risky) way to the goal
+
+    ax = utils.Axes(1, 1)[0]
+    ax.plot(pk, stay, label='stay')
+    ax.plot(pk, late_reach, label='late long')
+    ax.plot(pk, long, label='long')
+    ax.plot(pk, greed, label='greedy')
+    ax.legend()
+    ax.xlabel('p_kill')
+    ax.ylabel('E[loss]')
+    return ax
