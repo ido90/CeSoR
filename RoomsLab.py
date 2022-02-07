@@ -15,7 +15,7 @@ import gym
 import Agents, Optim, CEM
 import utils
 
-STATE_DIM = dict(xy=2, local_map=9, both=11, mid_map=25)
+STATE_DIM = dict(xy=2, local_map=9, both=11, mid_map=25, mid_map2=27)
 
 class Experiment:
 
@@ -24,7 +24,8 @@ class Experiment:
     def __init__(self, agents=None, train_episodes=500, valid_episodes=20,
                  test_episodes=100, global_seed=0, maze_size=16, max_episode_steps=None,
                  detailed_rewards=False, valid_freq=10, save_best_model=True,
-                 dynamics=(0.05,), clip_factor=(100,), action_noise=0.2,
+                 kill_prob=0.05, beta_kill_dist=True, clip_factor=None,
+                 action_noise=0.2,
                  optimizer=optim.Adam, optim_freq=100, episodic_loss=True,
                  cvar=1, normalize_returns=True, max_distributed=0,
                  gamma=1.0, lr=1e-2, weight_decay=0.0, state_mode='xy',
@@ -49,14 +50,19 @@ class Experiment:
         self.valid_freq = valid_freq
         self.save_best_model = save_best_model
 
-        self.dynamics = np.array(dynamics)
-        self.clip_factor = np.array(clip_factor)
+        self.dynamics = np.array([kill_prob])
+        self.clip_factor = None if clip_factor is None else np.array(clip_factor)
+        # If true - model killing probability using Beta(a,2-a), whose mean
+        # is kill_prob=a/2 and variance is a*(2-a)/12.
+        # https://en.wikipedia.org/wiki/Beta_distribution
+        self.use_beta_dist = beta_kill_dist
         self.action_noise = action_noise
 
         self.optimizer_constructor = optimizer
         self.optim_freq = optim_freq
         self.episodic_loss = episodic_loss
         self.cvar = cvar
+        self.cvar_w_bug = False
         self.normalize_returns = normalize_returns
         self.gamma = gamma # note: 0.98^100=13%, 0.99^200=13%
         self.lr = lr
@@ -70,6 +76,7 @@ class Experiment:
         self.test_episodes_params = None
         self.agents = None
         self.agents_names = None
+        self.last_train_success = {}
         self.valid_scores = {}
         self.samples_usage = {}
         # https://en.wikipedia.org/wiki/Effective_sample_size#Weighted_samples
@@ -80,6 +87,7 @@ class Experiment:
                           source_sample_perc=ce_source_perc, IS=ce_IS,
                           valid_ref=ce_ref, mode='Rooms')
         self.ce_history = {}
+        self.ce_ws = {}
 
         self.make_env()
         self.generate_test_episodes()
@@ -139,8 +147,12 @@ class Experiment:
         if s0_dist is None: s0_dist = (1,1,6,6) if self.maze_size>14 else (1,1,4,4)
         if dyn_dist is None: dyn_dist = self.dynamics
         if dyn_clip is None: dyn_clip = self.clip_factor
+        dyn_dist = np.array(dyn_dist)
 
-        dyn = np.random.exponential(np.array(dyn_dist), size=(len(dyn_dist),))
+        if self.use_beta_dist:
+            dyn = np.random.beta(2*dyn_dist, 2-2*dyn_dist)
+        else:
+            dyn = np.random.exponential(np.array(dyn_dist), size=(len(dyn_dist),))
         if dyn_clip:
             dyn = np.clip(dyn, self.dynamics / dyn_clip, dyn_clip * self.dynamics)
 
@@ -191,7 +203,7 @@ class Experiment:
         self.dd.reset_index(drop=True, inplace=True)
         self.build_episode_map()
 
-    def set_agents(self, agents, generate_tables=True, disable_lstm=True):
+    def set_agents(self, agents, generate_tables=True):
         if not isinstance(agents, (tuple, list, dict)):
             agents = [agents]
 
@@ -200,10 +212,9 @@ class Experiment:
             self.agents_names = []
             self.agents = {}
             for nm, (const, args) in agents.items():
-                args['state_dim'] = STATE_DIM[self.state_mode]
+                args['state_dim'] = self.maze_size if self.state_mode=='full' \
+                    else STATE_DIM[self.state_mode]
                 args['act_dim'] = 4
-                if disable_lstm:
-                    args['lstm'] = False
                 self.agents_names.append(nm)
                 a = const(**args)
                 a.title = nm
@@ -212,6 +223,8 @@ class Experiment:
             # assuming list (or another iterable) of actual agents
             self.agents_names = [a.title for a in agents]
             self.agents = {a.title:a for a in agents}
+
+        self.last_train_success = {a:True for a in self.agents_names}
 
         if generate_tables:
             self.generate_train_dd()
@@ -281,7 +294,7 @@ class Experiment:
                 if verbose >= 2:
                     print(observation)
 
-                agent_input = observation
+                agent_input = observation / self.maze_size
                 if self.state_mode == 'local_map':
                     agent_input = self.env.get_local_map().reshape(-1)
                 elif self.state_mode == 'mid_map':
@@ -289,6 +302,11 @@ class Experiment:
                 elif self.state_mode == 'both':
                     agent_input = np.concatenate((
                         agent_input, self.env.get_local_map().reshape(-1)))
+                elif self.state_mode == 'mid_map2':
+                    agent_input = np.concatenate((
+                        agent_input, self.env.get_local_map(rad=2).reshape(-1)))
+                elif self.state_mode == 'full':
+                    agent_input = self.env._im_from_state()
 
                 action, log_prob, _ = agent.act(
                     agent_input, T=temperature, verbose=verbose-2, **kwargs)
@@ -412,6 +430,7 @@ class Experiment:
         T0 = get_value('T0')
         Tgamma = get_value('Tgamma')
         cvar = get_value('cvar')
+        cvar_w_bug = get_value('cvar_w_bug')
 
         # CE hparams
         if isinstance(agent.train_hparams, dict) and \
@@ -434,7 +453,7 @@ class Experiment:
             ce = self.ce
 
         return lr, weight_decay, optim_freq, episodic_loss, normalize_returns, \
-               T0, Tgamma, cvar, ce
+               T0, Tgamma, cvar, cvar_w_bug, ce
 
     def train_with_dependencies(self, agents_names=None, **kwargs):
         if agents_names is None: agents_names = self.agents_names.copy()
@@ -505,14 +524,16 @@ class Experiment:
 
             # merge results
             for agent_nm, d in zip(names, dd):
-                self.dd[(self.dd.agent == agent_nm) & (self.dd.group == 'train')] = d[0]
-                self.valid_scores[agent_nm] = d[1]
-                self.samples_usage[agent_nm] = d[2]
-                self.eff_samples_usage[agent_nm] = d[3]
-                self.ce_history[agent_nm] = d[4]
+                self.last_train_success[agent_nm] = d[0]
+                self.dd[(self.dd.agent == agent_nm) & (self.dd.group == 'train')] = d[1]
+                self.valid_scores[agent_nm] = d[2]
+                self.samples_usage[agent_nm] = d[3]
+                self.eff_samples_usage[agent_nm] = d[4]
+                self.ce_history[agent_nm] = d[5]
+                self.ce_ws[agent_nm] = d[6]
                 # update agent
                 self.agents[agent_nm].load()
-                self.agents[agent_nm].n_updates = d[0].ag_updates.values[-1] + 1
+                self.agents[agent_nm].n_updates = d[1].ag_updates.values[-1] + 1
 
     @staticmethod
     def train_agent_wrapper(q, E, agent_nm, kwargs):
@@ -521,20 +542,24 @@ class Experiment:
             E.train_agent(agent_nm, **kwargs)
         except:
             q.put((agent_nm, (
+                False,
                 E.dd[(E.dd.agent==agent_nm)&(E.dd.group=='train')],
                 E.valid_scores[agent_nm],
                 E.samples_usage[agent_nm],
                 E.eff_samples_usage[agent_nm],
                 E.ce_history[agent_nm],
+                E.ce_ws[agent_nm],
             )))
             print(f'Error in {agent_nm}.')
             raise
         q.put((agent_nm, (
+            True,
             E.dd[(E.dd.agent == agent_nm) & (E.dd.group == 'train')],
             E.valid_scores[agent_nm],
             E.samples_usage[agent_nm],
             E.eff_samples_usage[agent_nm],
             E.ce_history[agent_nm],
+            E.ce_ws[agent_nm],
         )))
 
     def train_agent(self, agent_nm, log_freq=None, verbose=1, **kwargs):
@@ -545,7 +570,7 @@ class Experiment:
             agent.load(agent.pretrained_filename)
         agent.train()
 
-        lr, weight_decay, optim_freq, episodic_loss, normalize_returns, T0, Tgamma, cvar, ce = \
+        lr, weight_decay, optim_freq, episodic_loss, normalize_returns, T0, Tgamma, cvar, cvar_w_bug, ce = \
             self.get_train_hparams(agent)
         valid_fun = (lambda x: np.mean(sorted(x)[:int(np.ceil(cvar*len(x)))])) \
             if (0<cvar<1) else np.mean
@@ -553,7 +578,7 @@ class Experiment:
         optimizer = self.optimizer_constructor(
             agent.parameters(), lr=lr, weight_decay=weight_decay)
         optimizer_wrap = Optim.Optimizer(
-            optimizer, optim_freq, episodic_loss, normalize_returns, cvar)
+            optimizer, optim_freq, episodic_loss, normalize_returns, cvar, cvar_w_bug)
 
         # get episodes
         ids = np.arange(len(self.dd))[
@@ -605,6 +630,7 @@ class Experiment:
             self.samples_usage[agent_nm] = optimizer_wrap.samples_per_step
             self.eff_samples_usage[agent_nm] = optimizer_wrap.eff_samples_per_step
             self.ce_history[agent_nm] = ce.history
+            self.ce_ws[agent_nm] = ce.w_history
 
             # log
             if log_freq > 0 and ((i + 1) % log_freq) == 0:
@@ -746,6 +772,29 @@ class Experiment:
                     effective_samples_used=100*np.array(self.eff_samples_usage[agent]),
                 ))))
 
+        # sampler weights
+        weights = pd.DataFrame()
+        for agent in self.agents_names:
+            if agents is None or agent in agents:
+                ws = self.ce_ws[agent]
+                n_iters = len(ws)
+                n_samps = len(ws[0])
+                ce = self.get_train_hparams(self.agents[agent])[-1]
+                if ce.update_freq > 0:
+                    if ce.n_source > 0:
+                        source_dist = ce.n_source*[True] + (n_samps-ce.n_source)*[False]
+                    else:
+                        source_dist = n_samps*[False]
+                else:
+                    source_dist = n_samps*[True]
+
+                weights = pd.concat((weights, pd.DataFrame(dict(
+                    agent = agent,
+                    train_iteration = np.repeat(np.arange(n_iters), n_samps),
+                    source_distribution = n_iters*list(source_dist),
+                    weight = np.concatenate(ws),
+                ))))
+
         if agents is not None:
             train_valid_df = train_valid_df[train_valid_df.agent.isin(agents)]
             test_df = test_df[test_df.agent.isin(agents)]
@@ -753,10 +802,12 @@ class Experiment:
         train_valid_df.reset_index(drop=True, inplace=True)
         test_df.reset_index(drop=True, inplace=True)
         samples_usage.reset_index(drop=True, inplace=True)
-        return train_valid_df, test_df, samples_usage
+        return train_valid_df, test_df, samples_usage, weights
 
-    def analyze(self, agents=None, W=3, axsize=(6,4), Q=100):
-        train_valid_df, test_df, samples_usage = self.analysis_preprocessing(agents)
+    def analyze(self, agents=None, W=3, axsize=(6,4), Q=100,
+                verify_train_success=False):
+        train_valid_df, test_df, samples_usage, weights = \
+            self.analysis_preprocessing(agents)
 
         axs = utils.Axes(6, W, axsize, fontsize=15)
         a = 0
@@ -772,6 +823,8 @@ class Experiment:
         agents, ids = np.unique(test_df.agent.values, return_index=True)
         agents = agents[np.argsort(ids)]
         for agent in agents:
+            if verify_train_success and not self.last_train_success[agent]:
+                continue
             scores = test_df.score[test_df.agent==agent].values
             utils.plot_quantiles(scores, Q=np.arange(Q+1)/100, showmeans=True, ax=axs[a],
                                  label=f'{agent} ({np.mean(scores):.1f})')
@@ -780,6 +833,16 @@ class Experiment:
         axs[a].legend(fontsize=13)
         a += 1
 
+        if verify_train_success:
+            valid_agents = [a for a in self.agents_names if self.last_train_success[a]]
+            weights = weights[weights.agent.isin(valid_agents)]
+        iter_resol = 1 + weights.train_iteration.values[-1] // 4
+        weights['iter_rounded'] = [iter_resol*(it//iter_resol) \
+                                   for it in weights.train_iteration]
+        sns.boxplot(data=weights, x='iter_rounded', hue='agent', y='weight',
+                    showmeans=True, ax=axs[a])
+        axs.labs(a, 'train iteration', 'weight')
+        axs[a].legend(fontsize=13)
         a += 1
 
         sns.lineplot(data=samples_usage, x='train_iteration', hue='agent',
@@ -800,7 +863,7 @@ class Experiment:
             ceh = self.ce_history[agent]
             y = [100*yy[-1] for yy in ceh['dyn_dists']]
             axs[a].plot(np.arange(len(y)), y, '.-', label=agent)
-        axs[a].set_yscale('log')
+        axs[a].set_ylim((0, 100))
         axs.labs(a, 'CE iteration', 'kill prob [%]')
         axs[a].legend(fontsize=13)
         a += 1
