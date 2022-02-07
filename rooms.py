@@ -27,7 +27,7 @@ class RoomsEnv(core.Env):
         self.detailed_r = detailed_r
         self.rows, self.cols = rows, cols
         self.L = 2 * self.rows
-        self.max_steps = 8*self.L if max_steps is None else max_steps
+        self.max_steps = 10*self.L if max_steps is None else max_steps
         self.force_motion = force_motion
 
         n_channels = 2 + goal_in_state
@@ -286,25 +286,25 @@ class RoomsEnv(core.Env):
     def render(self, mode='human', close=False):
         return 0
 
-def _evaluate_strategies(n=8):
+def _evaluate_strategies(n=8, max_cost=2, goal_val=1, kill_cost=4,
+                         short_dist=1):
     pk = np.arange(0,1.01,0.01) # kill probabilities
     L = 2 * n # going from one end to the other
-    max_cost = 2 * L
-    g = 1
-    k = 4
+    max_cost *= L
+    goal_val *= L
 
     # costs of different strategies
     stay = max_cost + 0*pk # staying out of trouble
-    late_reach = max_cost -g*L + 0*pk # random walk to the goal
-    long = 3*(n-2)*1 - g*L + 0*pk # long way to the goal
-    greed = 1.2*(n-2)*1 - g*L + k*L*pk # short (and risky) way to the goal
+    late_reach = max_cost -goal_val + 0*pk # random walk to the goal
+    long = (4-short_dist)*(n-2)*1 - goal_val + 0*pk # long way to the goal
+    greed = short_dist*(n-2)*1 - goal_val + kill_cost*L*pk # short (and risky) way
 
-    ax = utils.Axes(1, 1)[0]
+    axs = utils.Axes(1, 1)
+    ax = axs[0]
     ax.plot(pk, stay, label='stay')
     ax.plot(pk, late_reach, label='late long')
     ax.plot(pk, long, label='long')
     ax.plot(pk, greed, label='greedy')
     ax.legend()
-    ax.xlabel('p_kill')
-    ax.ylabel('E[loss]')
+    axs.labs(0, 'p_kill', 'E[loss]')
     return ax
