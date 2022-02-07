@@ -84,12 +84,14 @@ class FC(NN):
         sizes = [self.state_dim] + list(mid_sizes)
         layer = nn.LSTMCell if self.lstm else nn.Linear
 
-        self.layers = nn.ModuleList([layer(a, b) for a,b in zip(sizes[:-1],sizes[1:])])
+        self.layers = nn.ModuleList([layer(a, b) for a,b in \
+                                     zip(sizes[:-1],sizes[1:])]).to(self.device)
         self.drop_p = dropout
         self.dropouts = None
         if self.drop_p:
-            self.dropouts = [nn.Dropout(p=dropout) for _ in range(len(mid_sizes))]
-        self.head = nn.Linear(mid_sizes[-1], self.act_dim)
+            self.dropouts = [nn.Dropout(p=dropout).to(self.device) \
+                             for _ in range(len(mid_sizes))]
+        self.head = nn.Linear(mid_sizes[-1], self.act_dim).to(self.device)
 
         self.h, self.c = None, None
         self.init_state()
@@ -106,6 +108,8 @@ class FC(NN):
     def forward(self, x, T=1):
         if T==0: T=1
 
+        x = x.to(self.device)
+
         if self.lstm:
             for j, layer in enumerate(self.layers):
                 self.h[j], self.c[j] = layer(
@@ -119,7 +123,7 @@ class FC(NN):
                 x = F.relu(x)
 
         action_scores = self.head(x)
-        return F.softmax(action_scores/T, dim=1)
+        return F.softmax(action_scores/T, dim=1).cpu()
 
 
 class CNN(NN):
