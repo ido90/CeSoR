@@ -113,7 +113,7 @@ class CEM:
         if self.modify_dyn:
             if self.use_beta:
                 X = np.stack(self.curr_episodes['dyn'][:i0])
-                self.sample_dyn_dist = np.mean(X, axis=0)
+                self.sample_dyn_dist = np.clip(np.mean(X, axis=0), 0.001, 0.999)
             else:
                 self.sample_dyn_dist = np.mean(np.stack(self.curr_episodes['dyn'][:i0]), axis=0)
         if self.modify_s0:
