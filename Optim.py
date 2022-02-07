@@ -9,7 +9,8 @@ DEBUG_MODE = False
 
 class Optimizer:
     def __init__(self, optimizer, optim_freq=20, episodic_loss=False,
-                 normalize_rets=False, cvar=1, verbose=1):
+                 normalize_rets=False, cvar=1, cvar_w_bug=False, verbose=1):
+        self.cvar_w_bug = cvar_w_bug
         self.o = optimizer
         self.optim_freq = optim_freq
         # loss per time-step (better) or per episode (applicable to cvar)
@@ -78,13 +79,12 @@ class Optimizer:
         self.n_updates += 1
         self.o.zero_grad()
 
-        w = torch.tensor(self.curr_weights, dtype=torch.float32)
-        w = w / w.sum()
+        w = np.array(self.curr_weights, dtype=np.float32)
+        w = w / np.sum(w)
 
         if not self.is_cvar:
             self.samples_per_step.append(1)
-            self.eff_samples_per_step.append(
-                (1/(w**2).sum()/len(w)).cpu().detach().numpy())
+            self.eff_samples_per_step.append(1/(w**2).sum()/len(w))
             # optimize E[score]
             if self.episodic_loss:
                 if self.normalize_rets:
@@ -93,7 +93,8 @@ class Optimizer:
                 losses = [-lp*s for lp,s in zip(self.curr_log_probs, self.curr_scores)]
             else:
                 losses = self.curr_losses
-            weighted_mean_score = (w * torch.stack(losses, 0)).sum()
+            weighted_mean_score = (
+                    torch.tensor(w, dtype=torch.float32) * torch.stack(losses, 0)).sum()
             if torch.isnan(weighted_mean_score): # TODO tmp
                 import pdb
                 pdb.set_trace()
@@ -112,17 +113,21 @@ class Optimizer:
                 q, i0 = get_quantile_from_reference(scores, self.alpha, ref_scores)
                 if i0 < 0:
                     if self.verbose >= 1:
-                        print(f'\t[iteration {self.n_updates:d}] {self.alpha}-quantile '
+                        print(f'\t\t[iteration {self.n_updates:d}] {self.alpha}-quantile '
                               f'of reference scores is {q}, smaller than lowest train '
                               f'score ({np.min(scores)}).')
                     q, i0 = get_quantile(scores, self.alpha, w)
             self.samples_per_step.append((i0+1)/len(scores))
             self.eff_samples_per_step.append(
-                (np.sum(w[:i0+1])**2/np.sum(np.array(w[:i0+1])**2)/len(scores)
-                 ).cpu().detach().numpy())
+                np.sum(w[:i0+1])**2/np.sum(np.array(w[:i0+1])**2)/len(scores))
             # derive loss
-            loss = torch.stack([-log_probs[i] * (scores[i]-q) \
-                                for i in range(i0+1)], 0).mean()
+            if not self.cvar_w_bug:
+                w_sum = np.sum(w[:i0+1])
+                loss = torch.stack([- w[i] * log_probs[i] * (scores[i]-q) \
+                                    for i in range(i0+1)], 0).sum() / w_sum
+            else:
+                loss = torch.stack([-log_probs[i] * (scores[i]-q) \
+                                    for i in range(i0+1)], 0).mean()
             loss.backward()
 
         if DEBUG_MODE:
