@@ -29,7 +29,7 @@ class Experiment:
                  kill_prob=0.05, beta_kill_dist=True, clip_factor=None,
                  action_noise=0.2, max_distributed=0, normalize_returns=True,
                  optimizer=optim.Adam, optim_freq=100, episodic_loss=True,
-                 cvar=1, gradual_cvar=False,
+                 cvar=1, gradual_cvar=False, ref_cvar_quantile=True,
                  gamma=1.0, lr=1e-2, weight_decay=0.0, state_mode='xy',
                  use_ce=False, ce_perc=0.2, ce_source_perc=0, ce_dyn=True, ce_s0=False,
                  ce_IS=True, ce_ref=False, log_freq=1000, T0=1, Tgamma=1, title=''):
@@ -67,6 +67,7 @@ class Experiment:
         self.episodic_loss = episodic_loss
         self.cvar = cvar
         self.gradual_cvar = gradual_cvar
+        self.ref_cvar_quantile = ref_cvar_quantile
         self.normalize_returns = normalize_returns
         self.gamma = gamma # note: 0.98^100=13%, 0.99^200=13%
         self.lr = lr
@@ -621,6 +622,8 @@ class Experiment:
                     ref_scores = optimizer_wrap.curr_scores[:ce.n_source]
                 else:
                     ref_scores = self.valid_scores[agent_nm][-1]
+            elif self.ref_cvar_quantile:
+                ref_scores = optimizer_wrap.curr_scores
 
             # optimize
             if optimizer_wrap.step(w, log_prob, score, ret_loss, ref_scores):
