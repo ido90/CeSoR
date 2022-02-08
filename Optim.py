@@ -9,7 +9,7 @@ DEBUG_MODE = False
 
 class Optimizer:
     def __init__(self, optimizer, optim_freq=20, episodic_loss=False,
-                 normalize_rets=False, cvar=1, verbose=1):
+                 normalize_rets=False, cvar=1, running_cvar=None, verbose=1):
         self.o = optimizer
         self.optim_freq = optim_freq
         # loss per time-step (better) or per episode (applicable to cvar)
@@ -17,6 +17,7 @@ class Optimizer:
         self.normalize_rets = normalize_rets
         self.is_cvar = (0<cvar<1)
         self.alpha = cvar
+        self.running_cvar = running_cvar
         self.verbose = verbose
 
         if self.normalize_rets and self.optim_freq == 1:
@@ -57,6 +58,11 @@ class Optimizer:
         self.curr_scores = []
         self.curr_losses = []
 
+    def get_cvar_alpha(self):
+        if self.running_cvar is None:
+            return self.alpha
+        return self.running_cvar(self.n_updates)
+
     def step(self, weight, log_prob, score, loss, ref_scores=None):
         # update metrics
         self.curr_weights.append(weight)      # np
@@ -75,6 +81,7 @@ class Optimizer:
         return False
 
     def optimize(self, ref_scores=None):
+        alpha = self.get_cvar_alpha()
         self.n_updates += 1
         self.o.zero_grad()
 
@@ -107,12 +114,12 @@ class Optimizer:
             w = [w[i] for i in ids]
             # find score's alpha-quantile
             if ref_scores is None:
-                q, i0 = get_quantile(scores, self.alpha, w)
+                q, i0 = get_quantile(scores, alpha, w)
             else:
-                q, i0 = get_quantile_from_reference(scores, self.alpha, ref_scores)
+                q, i0 = get_quantile_from_reference(scores, alpha, ref_scores)
                 if i0 < 0:
                     if self.verbose >= 1:
-                        print(f'\t\t[iteration {self.n_updates:d}] {self.alpha}-quantile '
+                        print(f'\t\t[iteration {self.n_updates:d}] {alpha:.2f}-quantile '
                               f'of reference scores is {q}, smaller than lowest train '
                               f'score ({np.min(scores)}).')
                     q, i0 = get_quantile(scores, self.alpha, w)

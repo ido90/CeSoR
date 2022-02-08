@@ -27,9 +27,9 @@ class Experiment:
                  max_episode_steps=None,
                  detailed_rewards=False, valid_freq=10, save_best_model=True,
                  kill_prob=0.05, beta_kill_dist=True, clip_factor=None,
-                 action_noise=0.2,
+                 action_noise=0.2, max_distributed=0, normalize_returns=True,
                  optimizer=optim.Adam, optim_freq=100, episodic_loss=True,
-                 cvar=1, normalize_returns=True, max_distributed=0,
+                 cvar=1, gradual_cvar=False,
                  gamma=1.0, lr=1e-2, weight_decay=0.0, state_mode='xy',
                  use_ce=False, ce_perc=0.2, ce_source_perc=0, ce_dyn=True, ce_s0=False,
                  ce_IS=True, ce_ref=False, log_freq=1000, T0=1, Tgamma=1, title=''):
@@ -66,6 +66,7 @@ class Experiment:
         self.optim_freq = optim_freq
         self.episodic_loss = episodic_loss
         self.cvar = cvar
+        self.gradual_cvar = gradual_cvar
         self.normalize_returns = normalize_returns
         self.gamma = gamma # note: 0.98^100=13%, 0.99^200=13%
         self.lr = lr
@@ -437,6 +438,7 @@ class Experiment:
         T0 = get_value('T0')
         Tgamma = get_value('Tgamma')
         cvar = get_value('cvar')
+        gradual_cvar = get_value('gradual_cvar')
 
         # CE hparams
         if isinstance(agent.train_hparams, dict) and \
@@ -459,7 +461,7 @@ class Experiment:
             ce = self.ce
 
         return lr, weight_decay, optim_freq, episodic_loss, normalize_returns, \
-               T0, Tgamma, cvar, ce
+               T0, Tgamma, cvar, gradual_cvar, ce
 
     def train_with_dependencies(self, agents_names=None, **kwargs):
         if agents_names is None: agents_names = self.agents_names.copy()
@@ -576,15 +578,18 @@ class Experiment:
             agent.load(agent.pretrained_filename)
         agent.train()
 
-        lr, weight_decay, optim_freq, episodic_loss, normalize_returns, T0, Tgamma, cvar, ce = \
-            self.get_train_hparams(agent)
+        lr, weight_decay, optim_freq, episodic_loss, normalize_returns, \
+        T0, Tgamma, cvar, gradual_cvar, ce = self.get_train_hparams(agent)
+
         valid_fun = (lambda x: np.mean(sorted(x)[:int(np.ceil(cvar*len(x)))])) \
             if (0<cvar<1) else np.mean
+        running_cvar = self.running_cvar_fun(
+            cvar, gradual_cvar, self.n_train//optim_freq)
 
         optimizer = self.optimizer_constructor(
             agent.parameters(), lr=lr, weight_decay=weight_decay)
-        optimizer_wrap = Optim.Optimizer(
-            optimizer, optim_freq, episodic_loss, normalize_returns, cvar)
+        optimizer_wrap = Optim.Optimizer(optimizer, optim_freq, episodic_loss,
+                                         normalize_returns, cvar, running_cvar)
 
         # get episodes
         ids = np.arange(len(self.dd))[
@@ -651,6 +656,13 @@ class Experiment:
 
         if verbose >= 1:
             print(f'{agent_nm:s} trained ({time.time() - t0:.0f}s).')
+
+    def running_cvar_fun(self, cvar, gradual_cvar, n_iters, switch_time=0.5):
+        if not gradual_cvar:
+            return None
+        if cvar and (0 < cvar < 1) and gradual_cvar:
+            return lambda i: 1-(i/(switch_time*n_iters))*(1-cvar) \
+                if i<switch_time*n_iters else cvar
 
     ###############   TEST   ###############
 
