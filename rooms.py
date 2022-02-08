@@ -10,7 +10,7 @@ warnings.filterwarnings("ignore", message="numpy.ufunc size changed")
 warnings.filterwarnings("ignore", message="precision lowered by casting")
 
 MAZE_SIZE = {1:8, 2:16}
-MAX_STEPS = {1:16, 2:64}
+MAX_STEPS = {1:12, 2:60}
 
 class RoomsEnv(core.Env):
     metadata = {'render.modes': ['human']}
