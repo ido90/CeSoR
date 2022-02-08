@@ -263,12 +263,14 @@ class RoomsEnv(core.Env):
     def _show_state(self, ax=None, color_scale=0.7, show_traj=True, traj_col='w'):
         if ax is None: ax = utils.Axes(1, 1, grid=False)[0]
         im = self._im_from_state(for_plot=True).swapaxes(0, 2)
+        im[self.state_cell[1],self.state_cell[0],2] = 0  # remove agent square
         ax.imshow(color_scale*im)
         ax.invert_yaxis()
         if show_traj:
             track = np.concatenate(self.state_traj)
             ax.plot(track[:, 0], track[:, 1], f'{traj_col}.-')
             ax.plot(track[:1, 0], track[:1, 1], f'{traj_col}>', markersize=12)
+            ax.plot(track[-1:, 0], track[-1:, 1], f'{traj_col}s', markersize=12)
         if self.rows == 16:
             ticks = [0,5,10,15]
             ax.set_xticks(ticks)
