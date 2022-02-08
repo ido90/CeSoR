@@ -260,7 +260,7 @@ class RoomsEnv(core.Env):
 
         return im  #.astype(np.int8)
 
-    def _show_state(self, ax=None, color_scale=0.6, show_traj=True, traj_col='b'):
+    def _show_state(self, ax=None, color_scale=0.7, show_traj=True, traj_col='w'):
         if ax is None: ax = utils.Axes(1, 1, grid=False)[0]
         im = self._im_from_state(for_plot=True).swapaxes(0, 2)
         ax.imshow(color_scale*im)
