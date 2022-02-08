@@ -870,7 +870,7 @@ class Experiment:
             y = [100*yy[-1] for yy in ceh['dyn_dists']]
             axs[a].plot(np.arange(len(y)), y, '.-', label=agent)
         axs[a].set_ylim((0, 100))
-        axs.labs(a, 'CE iteration', 'kill prob [%]')
+        axs.labs(a, 'train iteration', 'kill prob [%]')
         axs[a].legend(fontsize=13)
         a += 1
 
@@ -942,14 +942,14 @@ SAMPLE_AGENT_CONFS = dict(
     CVaR10 = (Agents.NN, dict(train_hparams=dict(cvar=0.1))),
     CVaR_CE_IS_REF = (Agents.NN, dict(train_hparams=dict(
         cvar=0.1, ce_update_freq=1, ce_perc=0.2, ce_IS=True,
-        ce_valid_ref=True, ce_source_perc=0.4))),
+        ce_valid_ref=True, ce_source_perc=0.2))),
 )
 
 if __name__ == '__main__':
 
     E = Experiment(SAMPLE_AGENT_CONFS, train_episodes=6000,
                    valid_episodes=40, test_episodes=500,
-                   dynamics=(0.05,), clip_factor=(20,))
+                   kill_prob=0.05)
     E.main()
     print(E.dd.tail())
     E.show_tests()

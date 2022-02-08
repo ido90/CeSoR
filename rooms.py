@@ -270,7 +270,7 @@ class RoomsEnv(core.Env):
             track = np.concatenate(self.state_traj)
             ax.plot(track[:, 0], track[:, 1], f'{traj_col}.-')
             ax.plot(track[:1, 0], track[:1, 1], f'{traj_col}>', markersize=12)
-            ax.plot(track[-1:, 0], track[-1:, 1], f'{traj_col}s', markersize=12)
+            ax.plot(track[-1:, 0], track[-1:, 1], f'{traj_col}s', markersize=10)
         if self.rows == 16:
             ticks = [0,5,10,15]
             ax.set_xticks(ticks)

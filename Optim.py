@@ -171,6 +171,7 @@ def get_quantile(scores, alpha, weights=None):
     return q, i0
 
 def get_quantile_from_reference(scores, alpha, ref_scores):
+    ref_scores = sorted(ref_scores)
     n = len(ref_scores)
     alpha_idx = (n + 1) * alpha - 1
     if alpha_idx < 0:
