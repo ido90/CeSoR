@@ -553,7 +553,7 @@ class Experiment:
                 self.ce_history[agent_nm] = d[5]
                 self.ce_ws[agent_nm] = d[6]
                 # update agent
-                self.agents[agent_nm].load()
+                self.load_agent(self.agents[agent_nm])
                 self.agents[agent_nm].n_updates = d[1].ag_updates.values[-1] + 1
 
     @staticmethod
