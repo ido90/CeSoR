@@ -180,7 +180,7 @@ def get_quantile(scores, alpha, weights=None):
 def get_quantile_from_reference(scores, alpha, ref_scores):
     ref_scores = sorted(ref_scores)
     n = len(ref_scores)
-    alpha_idx = (n + 1) * alpha - 1
+    alpha_idx = (n + 1) * alpha - 1 if alpha<1 else n - 1
     if alpha_idx < 0:
         warn(f'{n} reference samples can only estimate '
              f'quantile>={1 / (n + 1)}, not {alpha}.')
