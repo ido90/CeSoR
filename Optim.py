@@ -61,7 +61,10 @@ class Optimizer:
     def get_cvar_alpha(self):
         if self.running_cvar is None:
             return self.alpha
-        return self.running_cvar(self.n_updates)
+        alpha = self.running_cvar(self.n_updates)
+        if self.verbose >= 1:
+            print(f'[{self.n_updates:d}] alpha={alpha:.2f}')
+        return alpha
 
     def step(self, weight, log_prob, score, loss, ref_scores=None):
         # update metrics

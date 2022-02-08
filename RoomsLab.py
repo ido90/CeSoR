@@ -661,7 +661,7 @@ class Experiment:
         if verbose >= 1:
             print(f'{agent_nm:s} trained ({time.time() - t0:.0f}s).')
 
-    def running_cvar_fun(self, cvar, gradual_cvar, n_iters, switch_time=0.5):
+    def running_cvar_fun(self, cvar, gradual_cvar, n_iters, switch_time=0.8):
         if not gradual_cvar:
             return None
         if cvar and (0 < cvar < 1) and gradual_cvar:
