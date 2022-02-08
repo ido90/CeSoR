@@ -12,6 +12,7 @@ import torch
 import torch.optim as optim
 import gym
 
+import rooms
 import Agents, Optim, CEM
 import utils
 
@@ -22,7 +23,8 @@ class Experiment:
     ###############   INITIALIZATION & SETUP   ###############
 
     def __init__(self, agents=None, train_episodes=500, valid_episodes=20,
-                 test_episodes=100, global_seed=0, maze_size=16, max_episode_steps=None,
+                 test_episodes=100, global_seed=0, maze_mode=1, maze_size=None,
+                 max_episode_steps=None,
                  detailed_rewards=False, valid_freq=10, save_best_model=True,
                  kill_prob=0.05, beta_kill_dist=True, clip_factor=None,
                  action_noise=0.2,
@@ -39,6 +41,8 @@ class Experiment:
         self.n_train = train_episodes
         self.n_valid = valid_episodes
         self.n_test = test_episodes
+        self.maze_mode = maze_mode
+        if maze_size is None: maze_size = rooms.MAZE_SIZE[self.maze_mode]
         self.maze_size = maze_size
         self.max_episode_steps = max_episode_steps
         self.state_mode = state_mode
@@ -102,7 +106,8 @@ class Experiment:
             id='RoomsEnv-v0',
             entry_point='rooms:RoomsEnv',
             kwargs=dict(
-                kill_prob=self.dynamics[0], action_noise=self.action_noise,
+                mode=self.maze_mode, kill_prob=self.dynamics[0],
+                action_noise=self.action_noise,
                 rows=self.maze_size, max_steps=self.max_episode_steps,
                 detailed_r=self.detailed_rewards),
         )

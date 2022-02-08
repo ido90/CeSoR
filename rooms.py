@@ -9,14 +9,18 @@ warnings.filterwarnings("ignore", message="numpy.dtype size changed")
 warnings.filterwarnings("ignore", message="numpy.ufunc size changed")
 warnings.filterwarnings("ignore", message="precision lowered by casting")
 
+MAZE_SIZE = {1:8, 2:16}
+MAX_STEPS = {1:16, 2:64}
 
 class RoomsEnv(core.Env):
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, rows=8, cols=None, action_noise=0, max_steps=None, seed=None,
+    def __init__(self, mode=1, rows=None, cols=None, action_noise=0.2, max_steps=None,
+                 seed=None, kill_prob=0,
                  goal_in_state=True, detailed_r=False, force_motion=False, collect=False,
-                 fixed_reset=False, init_state=None, goal_state=None, continuous=True,
-                 kill_prob=0):
+                 fixed_reset=False, init_state=None, goal_state=None, continuous=True):
+        self.mode = mode
+        if rows is None: rows = MAZE_SIZE[self.mode]
         if cols is None: cols = rows
         if cols != rows:
             raise ValueError('Only square boards are currently supported.')
@@ -27,7 +31,9 @@ class RoomsEnv(core.Env):
         self.detailed_r = detailed_r
         self.rows, self.cols = rows, cols
         self.L = 2 * self.rows
-        self.max_steps = 10*self.L if max_steps is None else max_steps
+        if max_steps is None:
+            max_steps = MAX_STEPS[self.mode] * self.L
+        self.max_steps = max_steps
         self.force_motion = force_motion
 
         n_channels = 2 + goal_in_state
@@ -51,7 +57,8 @@ class RoomsEnv(core.Env):
         self.action_noise = action_noise
 
         self.map = self._randomize_walls()
-        self.goal_cell, self.goal = self._random_from_map(goal_state)
+        self.goal_cell, self.goal = self._random_from_map(
+            goal_state, 0.5*(self.mode-1))
         self.goal_cell = np.round(self.goal_cell).astype(int)
         self.goal_cell = self.goal_cell % self.rows
 
@@ -173,7 +180,10 @@ class RoomsEnv(core.Env):
             self.state[self.state_cell[0], self.state_cell[1]] = 1
 
         self.state_traj.append(np.reshape(self.state_xy,(1,self.state_xy.size)))
-        done = np.all(self.state_cell == self.goal_cell)
+        if self.goal_in_state:
+            done = self.goal[self.state_cell[0], self.state_cell[1]]
+        else:
+            done = np.all(self.state_cell == self.goal_cell)
 
         obs = self.get_obs()
         r = self.get_reward(done, moved, mid_cell)
@@ -208,7 +218,7 @@ class RoomsEnv(core.Env):
         y = pad + self.state_cell[1]
         return padded_map[x-rad:x+rad+1, y-rad:y+rad+1]
 
-    def _random_from_map(self, xy=None, radius=0):
+    def _random_from_map(self, xy=None, radius=0.):
         if xy is None:
             cell = self.rng.choice(self.rows), self.rng.choice(self.cols)
             while self.map[cell[0], cell[1]] != 0:
@@ -216,11 +226,12 @@ class RoomsEnv(core.Env):
             xy = np.array(cell).copy()
         else:
             xy = np.array(xy)
+            xy = xy % self.rows
             cell = np.round(xy).astype(int)
 
         map = np.zeros_like(self.map)
-        map[cell[0]-radius : cell[0]+radius+1,
-            cell[1]-radius : cell[1]+radius+1] = 1
+        map[int(cell[0]-radius) : int(cell[0]+radius+1),
+            int(cell[1]-radius) : int(cell[1]+radius+1)] = 1
 
         return xy, map
 
@@ -278,13 +289,22 @@ class RoomsEnv(core.Env):
         map[:, 0] = 1
         map[-1:, :] = 1
         map[:, -1:] = 1
+
         # inner walls
-        # map[:W//2, H//2-1:H//2+1] = 1
-        map[W//4+1:3*W//4, 3*H//4-1:3*H//4] = 1
-        map[3*W//4-1:3*W//4, H//4:3*H//4] = 1
+        if self.mode == 1:
+            map[W//4+1 : 3*W//4, 3*H//4-1 : 3*H//4] = 1  # hor, center
+            map[3*W//4-1 : 3*W//4, H//4 : 3*H//4] = 1  # ver, center
+        elif self.mode == 2:
+            map[:W//2-1, H//2-1 : H//2+1] = 1  # hor, left
+            map[W//4+1 : 3*W//4+1, 3*H//4-1 : 3*H//4+1] = 1  # hor, center
+            map[3*W//4-1 : 3*W//4+1, H//4 : 3*H//4] = 1  # ver, center
+
         # kill zone
         if self.kill_prob:
-            map[3*W//4-1:3*W//4, 1:H//4] = -1
+            if self.mode == 1:
+                map[3*W//4-1:3*W//4, 1:H//4] = -1
+            elif self.mode == 2:
+                map[3*W//4-1:3*W//4+1, 1:H//4] = -1
 
         return map
 
