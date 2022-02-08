@@ -826,24 +826,43 @@ class Experiment:
         samples_usage.reset_index(drop=True, inplace=True)
         return train_valid_df, test_df, samples_usage, weights
 
+    def build_estimators(self, est_names):
+        if isinstance(est_names, dict):
+            return est_names
+
+        if isinstance(est_names, str):
+            est_names = [est_names]
+
+        ests = {}
+        for est_name in est_names:
+            if est_name == 'mean':
+                est = est_name
+            elif est_name.startswith('cvar'):
+                alpha = float(est_name[len('cvar'):]) / 100
+                est = lambda x: np.mean(np.sort(x)[:int(np.ceil(alpha * len(x)))])
+            else:
+                raise ValueError(est_name)
+            ests[est_name] = est
+
+        return ests
+
     def analyze(self, agents=None, W=3, axsize=(6,4), Q=100,
-                train_estimator='mean', verify_train_success=False):
-        if isinstance(train_estimator, str) and train_estimator.startswith('cvar'):
-            alpha = float(train_estimator[len('cvar'):]) / 100
-            train_estimator = lambda x: np.mean(np.sort(x)[:int(np.ceil(alpha*len(x)))])
+                train_estimators=('mean','cvar10'), verify_train_success=False):
+        train_estimators = self.build_estimators(train_estimators)
         train_valid_df, test_df, samples_usage, weights = \
             self.analysis_preprocessing(agents)
 
-        axs = utils.Axes(6, W, axsize, fontsize=15)
+        axs = utils.Axes(5+len(train_estimators), W, axsize, fontsize=15)
         a = 0
 
-        sns.lineplot(data=train_valid_df, x='train_iteration', hue='agent',
-                     style='group', y='score', estimator=train_estimator, ax=axs[a])
-        axs[a].set_xlim((0,None))
-        # axs[a].set_ylim((max(-200, axs[a].get_ylim()[0]), None))
-        plt.setp(axs[a].get_legend().get_texts(), fontsize='13')
-        axs.labs(a, 'train iteration', 'score')
-        a += 1
+        for est_name, est in train_estimators.items():
+            sns.lineplot(data=train_valid_df, x='train_iteration', hue='agent',
+                         style='group', y='score', estimator=est, ax=axs[a])
+            axs[a].set_xlim((0,None))
+            # axs[a].set_ylim((max(-200, axs[a].get_ylim()[0]), None))
+            plt.setp(axs[a].get_legend().get_texts(), fontsize='13')
+            axs.labs(a, 'train iteration', f'{est_name} score')
+            a += 1
 
         agents, ids = np.unique(test_df.agent.values, return_index=True)
         agents = agents[np.argsort(ids)]
@@ -855,18 +874,6 @@ class Experiment:
                                  label=f'{agent} ({np.mean(scores):.1f})')
         axs[a].set_xlim((0,Q))
         axs.labs(a, 'episode quantile [%]', 'score')
-        axs[a].legend(fontsize=13)
-        a += 1
-
-        if verify_train_success:
-            valid_agents = [a for a in self.agents_names if self.last_train_success[a]]
-            weights = weights[weights.agent.isin(valid_agents)]
-        iter_resol = 1 + weights.train_iteration.values[-1] // 4
-        weights['iter_rounded'] = [iter_resol*(it//iter_resol) \
-                                   for it in weights.train_iteration]
-        sns.boxplot(data=weights, x='iter_rounded', hue='agent', y='weight',
-                    showmeans=True, ax=axs[a])
-        axs.labs(a, 'train iteration', 'weight')
         axs[a].legend(fontsize=13)
         a += 1
 
@@ -882,6 +889,18 @@ class Experiment:
         axs[a].set_xlim((0,None))
         plt.setp(axs[a].get_legend().get_texts(), fontsize='13')
         axs.labs(a, 'train iteration', 'effective sample size [%]')
+        a += 1
+
+        if verify_train_success:
+            valid_agents = [a for a in self.agents_names if self.last_train_success[a]]
+            weights = weights[weights.agent.isin(valid_agents)]
+        iter_resol = 1 + weights.train_iteration.values[-1] // 4
+        weights['iter_rounded'] = [iter_resol*(it//iter_resol) \
+                                   for it in weights.train_iteration]
+        sns.boxplot(data=weights, x='iter_rounded', hue='agent', y='weight',
+                    showmeans=True, ax=axs[a])
+        axs.labs(a, 'train iteration', 'weight')
+        axs[a].legend(fontsize=13)
         a += 1
 
         for agent in agents:
