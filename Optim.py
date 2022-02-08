@@ -9,8 +9,7 @@ DEBUG_MODE = False
 
 class Optimizer:
     def __init__(self, optimizer, optim_freq=20, episodic_loss=False,
-                 normalize_rets=False, cvar=1, cvar_w_bug=False, verbose=1):
-        self.cvar_w_bug = cvar_w_bug
+                 normalize_rets=False, cvar=1, verbose=1):
         self.o = optimizer
         self.optim_freq = optim_freq
         # loss per time-step (better) or per episode (applicable to cvar)
@@ -120,14 +119,10 @@ class Optimizer:
             self.samples_per_step.append((i0+1)/len(scores))
             self.eff_samples_per_step.append(
                 np.sum(w[:i0+1])**2/np.sum(np.array(w[:i0+1])**2)/len(scores))
+            w_sum = np.sum(w[:i0+1])
             # derive loss
-            if not self.cvar_w_bug:
-                w_sum = np.sum(w[:i0+1])
-                loss = torch.stack([- w[i] * log_probs[i] * (scores[i]-q) \
-                                    for i in range(i0+1)], 0).sum() / w_sum
-            else:
-                loss = torch.stack([-log_probs[i] * (scores[i]-q) \
-                                    for i in range(i0+1)], 0).mean()
+            loss = torch.stack([- w[i] * log_probs[i] * (scores[i]-q) \
+                                for i in range(i0+1)], 0).sum() / w_sum
             loss.backward()
 
         if DEBUG_MODE:
