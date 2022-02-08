@@ -144,7 +144,8 @@ class Experiment:
     def draw_episode_params(self, dyn_dist=None, s0_dist=None,
                             dyn_clip=None, seed=None):
         if seed is not None: np.random.seed(seed)
-        if s0_dist is None: s0_dist = (1,1,6,6) if self.maze_size>14 else (1,1,4,4)
+        if s0_dist is None: s0_dist = (0.6,0.6,6.6,6.6) if self.maze_size>14 \
+            else (0.6,0.6,3.6,3.6)
         if dyn_dist is None: dyn_dist = self.dynamics
         if dyn_clip is None: dyn_clip = self.clip_factor
         dyn_dist = np.array(dyn_dist)
@@ -156,7 +157,9 @@ class Experiment:
         if dyn_clip:
             dyn = np.clip(dyn, self.dynamics / dyn_clip, dyn_clip * self.dynamics)
 
-        state = np.random.randint(s0_dist[:2], np.array(s0_dist[2:])+1, size=(2,))
+        a = np.array(s0_dist[:2])
+        b = np.array(s0_dist[2:])
+        state = a + (b - a) * np.random.random(size=(2,))
 
         return dyn, state
 

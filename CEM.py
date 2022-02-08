@@ -72,8 +72,9 @@ class CEM:
             s0_clip = np.array(s0_clip)
             s0 = np.clip(s0, -s0_clip, s0_clip)
         else:
-            s0 = np.random.randint(
-                s0_dist[:2], np.array(s0_dist[2:])+1, size=(2,))
+            a = np.array(s0_dist[:2])
+            b = np.array(s0_dist[2:])
+            s0 = a + (b-a) * np.random.random(size=(2,))
 
         w = self.sample_weight(dyn, s0, use_source)
         n = len(self.history['dyn_dists']) - 1

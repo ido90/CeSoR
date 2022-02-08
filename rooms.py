@@ -52,9 +52,11 @@ class RoomsEnv(core.Env):
 
         self.map = self._randomize_walls()
         self.goal_cell, self.goal = self._random_from_map(goal_state)
+        self.goal_cell = np.round(self.goal_cell).astype(int)
         self.goal_cell = self.goal_cell % self.rows
-        self.state_cell, self.state = self._random_from_map(init_state)
-        self.state_xy = self.state_cell.copy()
+
+        self.state_xy, self.state = self._random_from_map(init_state)
+        self.state_cell = np.round(self.state_xy).astype(int)
 
         self.fixed_reset = fixed_reset
         if fixed_reset:
@@ -85,9 +87,10 @@ class RoomsEnv(core.Env):
             self.kill_prob = kill_prob
         if self.fixed_reset:
             self.state_cell, self.state = self.reset_state_cell, self.reset_state
+            self.state_xy = self.state_cell.copy()
         else:
-            self.state_cell, self.state = self._random_from_map(init_state)
-        self.state_xy = self.state_cell.copy()
+            self.state_xy, self.state = self._random_from_map(init_state)
+            self.state_cell = np.round(self.state_xy).astype(int)
         self.state_traj = [np.reshape(self.state_xy,(1,self.state_xy.size))]
         self.nsteps = 0
         self.tot_reward = 0
@@ -205,19 +208,21 @@ class RoomsEnv(core.Env):
         y = pad + self.state_cell[1]
         return padded_map[x-rad:x+rad+1, y-rad:y+rad+1]
 
-    def _random_from_map(self, cell=None, radius=0):
-        if cell is None:
+    def _random_from_map(self, xy=None, radius=0):
+        if xy is None:
             cell = self.rng.choice(self.rows), self.rng.choice(self.cols)
             while self.map[cell[0], cell[1]] != 0:
                 cell = self.rng.choice(self.rows), self.rng.choice(self.cols)
+            xy = np.array(cell).copy()
         else:
-            cell = np.array(cell).astype(int)
+            xy = np.array(xy)
+            cell = np.round(xy).astype(int)
 
         map = np.zeros_like(self.map)
         map[cell[0]-radius : cell[0]+radius+1,
             cell[1]-radius : cell[1]+radius+1] = 1
 
-        return np.array(cell), map
+        return xy, map
 
     def _im_from_state(self, for_plot=False):
         # map
