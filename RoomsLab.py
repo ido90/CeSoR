@@ -66,7 +66,6 @@ class Experiment:
         self.optim_freq = optim_freq
         self.episodic_loss = episodic_loss
         self.cvar = cvar
-        self.cvar_w_bug = False
         self.normalize_returns = normalize_returns
         self.gamma = gamma # note: 0.98^100=13%, 0.99^200=13%
         self.lr = lr
@@ -438,7 +437,6 @@ class Experiment:
         T0 = get_value('T0')
         Tgamma = get_value('Tgamma')
         cvar = get_value('cvar')
-        cvar_w_bug = get_value('cvar_w_bug')
 
         # CE hparams
         if isinstance(agent.train_hparams, dict) and \
@@ -461,7 +459,7 @@ class Experiment:
             ce = self.ce
 
         return lr, weight_decay, optim_freq, episodic_loss, normalize_returns, \
-               T0, Tgamma, cvar, cvar_w_bug, ce
+               T0, Tgamma, cvar, ce
 
     def train_with_dependencies(self, agents_names=None, **kwargs):
         if agents_names is None: agents_names = self.agents_names.copy()
@@ -578,7 +576,7 @@ class Experiment:
             agent.load(agent.pretrained_filename)
         agent.train()
 
-        lr, weight_decay, optim_freq, episodic_loss, normalize_returns, T0, Tgamma, cvar, cvar_w_bug, ce = \
+        lr, weight_decay, optim_freq, episodic_loss, normalize_returns, T0, Tgamma, cvar, ce = \
             self.get_train_hparams(agent)
         valid_fun = (lambda x: np.mean(sorted(x)[:int(np.ceil(cvar*len(x)))])) \
             if (0<cvar<1) else np.mean
@@ -586,7 +584,7 @@ class Experiment:
         optimizer = self.optimizer_constructor(
             agent.parameters(), lr=lr, weight_decay=weight_decay)
         optimizer_wrap = Optim.Optimizer(
-            optimizer, optim_freq, episodic_loss, normalize_returns, cvar, cvar_w_bug)
+            optimizer, optim_freq, episodic_loss, normalize_returns, cvar)
 
         # get episodes
         ids = np.arange(len(self.dd))[
@@ -904,6 +902,33 @@ class Experiment:
                 a += 1
 
         plt.tight_layout()
+        return axs
+
+    def analyze_exposure(self, agents=None, good_threshold=-32):
+        if agents is None: agents = self.agents_names
+        axs = utils.Axes(2, 2, (7,4))
+        good_episodes = {}
+        for ag in agents:
+            dd = self.dd[(self.dd.group=='train')&(self.dd.agent==ag)]
+            n_samp = (np.array(self.samples_usage[ag]) * self.optim_freq).astype(int)
+            n_iter = dd.ag_updates.values[-1] + 1
+
+            # total "good" episodes
+            used_scores = [dd[dd.ag_updates==i].score.values for i in range(n_iter)]
+            good_episodes[ag] = [np.sum(np.array(s)>good_threshold) \
+                                 for s in used_scores]
+            axs[0].plot(good_episodes[ag], label=ag)
+
+            # "good" episodes exposed to optimizer
+            used_scores = [sorted(dd[dd.ag_updates==i].score.values)[:n_samp[i]] \
+                           for i in range(n_iter)]
+            good_episodes[ag] = [np.sum(np.array(s)>good_threshold) \
+                                 for s in used_scores]
+            axs[1].plot(good_episodes[ag], label=ag)
+        axs.labs(0, 'train iteration', 'total "good" episodes')
+        axs.labs(1, 'train iteration', '"good" episodes fed to optimizer')
+        axs[0].legend()
+        axs[1].legend()
         return axs
 
     def main(self, **analysis_args):
