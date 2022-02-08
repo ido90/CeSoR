@@ -221,7 +221,6 @@ class Experiment:
             self.agents_names = []
             self.agents = {}
             for nm, (const, args) in agents.items():
-                if self.title: nm = f'{self.title}_{nm}'
                 args['state_dim'] = self.maze_size if self.state_mode=='full' \
                     else STATE_DIM[self.state_mode]
                 args['act_dim'] = 4
@@ -252,6 +251,18 @@ class Experiment:
         if generate_tables:
             self.generate_train_dd(title)
             self.generate_test_dd(title)
+
+    def save_agent(self, agent):
+        nm = agent.title
+        if self.title:
+            nm = f'{self.title}_{nm}'
+        agent.save(nm)
+
+    def load_agent(self, agent):
+        nm = agent.title
+        if self.title:
+            nm = f'{self.title}_{nm}'
+        agent.load(nm)
 
     ###############   RUN ENV   ###############
 
@@ -604,7 +615,7 @@ class Experiment:
         valid_score = valid_fun(self.valid_scores[agent_nm][-1])
         best_valid_score = valid_score
         if self.save_best_model:
-            agent.save()
+            self.save_agent(agent)
 
         for i, idx in enumerate(ids):
             # draw episode params
@@ -639,7 +650,7 @@ class Experiment:
                     # save model
                     if best_valid_score < valid_score:
                         if self.save_best_model:
-                            agent.save()
+                            self.save_agent(agent)
                         best_valid_score = valid_score
 
             self.samples_usage[agent_nm] = optimizer_wrap.samples_per_step
@@ -654,9 +665,9 @@ class Experiment:
 
         # load best model
         if self.save_best_model:
-            agent.load()
+            self.load_agent(agent)
         else:
-            agent.save()
+            self.save_agent(agent)
 
         if verbose >= 1:
             print(f'{agent_nm:s} trained ({time.time() - t0:.0f}s).')
