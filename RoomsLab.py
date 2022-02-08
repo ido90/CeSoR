@@ -221,6 +221,7 @@ class Experiment:
             self.agents_names = []
             self.agents = {}
             for nm, (const, args) in agents.items():
+                if self.title: nm = f'{self.title}_{nm}'
                 args['state_dim'] = self.maze_size if self.state_mode=='full' \
                     else STATE_DIM[self.state_mode]
                 args['act_dim'] = 4
@@ -826,7 +827,10 @@ class Experiment:
         return train_valid_df, test_df, samples_usage, weights
 
     def analyze(self, agents=None, W=3, axsize=(6,4), Q=100,
-                verify_train_success=False):
+                train_estimator='mean', verify_train_success=False):
+        if isinstance(train_estimator, str) and train_estimator.startswith('cvar'):
+            alpha = float(train_estimator[len('cvar'):]) / 100
+            train_estimator = lambda x: np.mean(np.sort(x)[:int(np.ceil(alpha*len(x)))])
         train_valid_df, test_df, samples_usage, weights = \
             self.analysis_preprocessing(agents)
 
@@ -834,7 +838,7 @@ class Experiment:
         a = 0
 
         sns.lineplot(data=train_valid_df, x='train_iteration', hue='agent',
-                     style='group', y='score', ax=axs[a])
+                     style='group', y='score', estimator=train_estimator, ax=axs[a])
         axs[a].set_xlim((0,None))
         # axs[a].set_ylim((max(-200, axs[a].get_ylim()[0]), None))
         plt.setp(axs[a].get_legend().get_texts(), fontsize='13')
@@ -921,7 +925,7 @@ class Experiment:
 
     def analyze_exposure(self, agents=None, good_threshold=-32):
         if agents is None: agents = self.agents_names
-        axs = utils.Axes(2, 2, (7,4))
+        axs = utils.Axes(2, 2, (7,4), fontsize=15)
         good_episodes = {}
         for ag in agents:
             dd = self.dd[(self.dd.group=='train')&(self.dd.agent==ag)]
@@ -940,10 +944,10 @@ class Experiment:
             good_episodes[ag] = [np.sum(np.array(s)>good_threshold) \
                                  for s in used_scores]
             axs[1].plot(good_episodes[ag], label=ag)
-        axs.labs(0, 'train iteration', 'total "good" episodes')
-        axs.labs(1, 'train iteration', '"good" episodes fed to optimizer')
-        axs[0].legend()
-        axs[1].legend()
+        axs.labs(0, 'train iteration', 'episodes reaching target')
+        axs.labs(1, 'train iteration', 'episodes reaching target\n*and* fed to optimizer')
+        axs[0].legend(fontsize=13)
+        axs[1].legend(fontsize=13)
         return axs
 
     def main(self, **analysis_args):
