@@ -899,6 +899,33 @@ class Experiment:
         plt.tight_layout()
         return axs
 
+    def analyze_exposure(self, agents=None, good_threshold=-32):
+        if agents is None: agents = self.agents_names
+        axs = utils.Axes(2, 2, (7,4))
+        good_episodes = {}
+        for ag in agents:
+            dd = self.dd[(self.dd.group=='train')&(self.dd.agent==ag)]
+            n_samp = (np.array(self.samples_usage[ag]) * self.optim_freq).astype(int)
+            n_iter = dd.ag_updates.values[-1] + 1
+
+            # total "good" episodes
+            used_scores = [dd[dd.ag_updates==i].score.values for i in range(n_iter)]
+            good_episodes[ag] = [np.sum(np.array(s)>good_threshold) \
+                                 for s in used_scores]
+            axs[0].plot(good_episodes[ag], label=ag)
+
+            # "good" episodes exposed to optimizer
+            used_scores = [sorted(dd[dd.ag_updates==i].score.values)[:n_samp[i]] \
+                           for i in range(n_iter)]
+            good_episodes[ag] = [np.sum(np.array(s)>good_threshold) \
+                                 for s in used_scores]
+            axs[1].plot(good_episodes[ag], label=ag)
+        axs.labs(0, 'train iteration', 'total "good" episodes')
+        axs.labs(1, 'train iteration', '"good" episodes fed to optimizer')
+        axs[0].legend()
+        axs[1].legend()
+        return axs
+
     def main(self, **analysis_args):
         self.train_with_dependencies()
         self.test()
