@@ -52,7 +52,7 @@ class Experiment:
 
         self.T0 = T0  # initial train temperature
         self.Tgamma = Tgamma  # temperature decay
-        self.temp = self.T0
+        self.T = self.T0
         self.valid_freq = valid_freq
         self.save_best_model = save_best_model
 
