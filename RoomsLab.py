@@ -676,8 +676,8 @@ class Experiment:
 
             # log
             if log_freq > 0 and ((i + 1) % log_freq) == 0:
-                print(f'\t[{i + 1:03d}/{len(ids):03d}, {agent_nm}] valid_loss='
-                      f'{valid_score:.1f}\t({time.time() - t0:.0f}s)')
+                print(f'\t[{i + 1:03d}/{len(ids):03d}, {agent_nm}] valid_mean='
+                      f'{valid_mean:.1f}\t({time.time() - t0:.0f}s)')
 
         # load best model
         if self.save_best_model:

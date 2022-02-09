@@ -121,11 +121,11 @@ class Optimizer:
             else:
                 q, i0 = get_quantile_from_reference(scores, alpha, ref_scores)
                 if i0 < 0:
-                    if self.verbose >= 1:
+                    if self.verbose >= 1 and q < np.min(scores):
                         print(f'\t\t[iteration {self.n_updates:d}] {alpha:.2f}-quantile '
                               f'of reference scores is {q}, smaller than lowest train '
                               f'score ({np.min(scores)}).')
-                    q, i0 = get_quantile(scores, self.alpha, w)
+                    q, i0 = get_quantile(scores, alpha, w)
             self.samples_per_step.append((i0+1)/len(scores))
             self.eff_samples_per_step.append(
                 np.sum(w[:i0+1])**2/np.sum(np.array(w[:i0+1])**2)/len(scores))
@@ -192,5 +192,5 @@ def get_quantile_from_reference(scores, alpha, ref_scores):
     i2 = i1 + 1 if alpha_idx < n - 1 else i1
     i2_weight = alpha_idx - i1
     q = ref_scores[i1] + i2_weight * (ref_scores[i2] - ref_scores[i1])
-    i0 = int(np.sum(np.array(scores) <= q)) - 1
+    i0 = int(np.sum(np.array(scores) < q)) - 1
     return q, i0
