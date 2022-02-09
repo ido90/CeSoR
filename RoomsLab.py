@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 import time
+import pickle as pkl
 import multiprocessing as mp
 import torch
 import torch.optim as optim
@@ -30,7 +31,7 @@ class Experiment:
                  action_noise=0.2, max_distributed=0, normalize_returns=True,
                  optimizer=optim.Adam, optim_freq=100, episodic_loss=True,
                  cvar=1, gradual_cvar=False, ref_cvar_quantile=True,
-                 gamma=1.0, lr=1e-2, weight_decay=0.0, state_mode='xy',
+                 gamma=1.0, lr=1e-2, weight_decay=0.0, state_mode='mid_map2',
                  use_ce=False, ce_perc=0.2, ce_source_perc=0, ce_dyn=True, ce_s0=False,
                  ce_IS=True, ce_ref=False, log_freq=1000, T0=1, Tgamma=1, title=''):
         self.title = title
@@ -259,10 +260,19 @@ class Experiment:
         agent.save(nm)
 
     def load_agent(self, agent):
-        nm = agent.title
+        if isinstance(agent, str):
+            nm = agent
+            agent = self.agents[nm]
+        else:
+            nm = agent.title
         if self.title:
             nm = f'{self.title}_{nm}'
         agent.load(nm)
+
+    def load_agents(self, agents=None):
+        if agents is None: agents = self.agents_names
+        for agent in agents:
+            self.load_agent(agent)
 
     ###############   RUN ENV   ###############
 
@@ -613,7 +623,9 @@ class Experiment:
             self.test(agent_nm, 'valid', update_inplace=False, temperature=0,
                       verbose=0)]
         valid_score = valid_fun(self.valid_scores[agent_nm][-1])
+        valid_mean = np.mean(self.valid_scores[agent_nm][-1])
         best_valid_score = valid_score
+        best_valid_mean = valid_mean
         if self.save_best_model:
             self.save_agent(agent)
 
@@ -647,11 +659,15 @@ class Experiment:
                         self.test(agent_nm, 'valid', update_inplace=False,
                                   temperature=0, verbose=0))
                     valid_score = valid_fun(self.valid_scores[agent_nm][-1])
+                    valid_mean = np.mean(self.valid_scores[agent_nm][-1])
                     # save model
-                    if best_valid_score < valid_score:
+                    if best_valid_score < valid_score or \
+                        (best_valid_score == valid_score and
+                         best_valid_mean <= valid_mean):
                         if self.save_best_model:
                             self.save_agent(agent)
                         best_valid_score = valid_score
+                        best_valid_mean = valid_mean
 
             self.samples_usage[agent_nm] = optimizer_wrap.samples_per_step
             self.eff_samples_usage[agent_nm] = optimizer_wrap.eff_samples_per_step
@@ -765,6 +781,21 @@ class Experiment:
 
     ###############   ANALYSIS   ###############
 
+    def save_results(self, fname=None):
+        if fname is None: fname=f'outputs/{self.title}'
+        fname += '.pkl'
+        with open(fname, 'wb') as h:
+            pkl.dump((self.dd.copy(), self.valid_scores.copy(),
+                      self.samples_usage.copy(), self.eff_samples_usage.copy(),
+                      self.ce_history.copy(), self.ce_ws.copy()), h)
+
+    def load_results(self, fname=None):
+        if fname is None: fname=f'outputs/{self.title}'
+        fname += '.pkl'
+        with open(fname, 'rb') as h:
+            self.dd, self.valid_scores, self.samples_usage, \
+            self.eff_samples_usage, self.ce_history, self.ce_ws = pkl.load(h)
+
     def analysis_preprocessing(self, agents=None):
         train_df = self.dd[self.dd.group == 'train']
         train_df = pd.DataFrame(dict(
@@ -812,6 +843,8 @@ class Experiment:
                 ws = self.ce_ws[agent]
                 n_iters = len(ws)
                 n_samps = len(ws[0])
+                if n_iters <= 1:
+                    continue
                 ce = self.get_train_hparams(self.agents[agent])[-1]
                 if ce.update_freq > 0:
                     if ce.n_source > 0:
@@ -848,9 +881,11 @@ class Experiment:
         for est_name in est_names:
             if est_name == 'mean':
                 est = est_name
+                est_name = f'${est_name}$'
             elif est_name.startswith('cvar'):
                 alpha = float(est_name[len('cvar'):]) / 100
                 est = lambda x: np.mean(np.sort(x)[:int(np.ceil(alpha * len(x)))])
+                est_name = f'$CVaR_{{{alpha:.2f}}}$'
             else:
                 raise ValueError(est_name)
             ests[est_name] = est
@@ -858,12 +893,15 @@ class Experiment:
         return ests
 
     def analyze(self, agents=None, W=3, axsize=(6,4), Q=100,
-                train_estimators=('mean','cvar10'), verify_train_success=False):
+                train_estimators=('mean','cvar05'), verify_train_success=False):
         train_estimators = self.build_estimators(train_estimators)
         train_valid_df, test_df, samples_usage, weights = \
             self.analysis_preprocessing(agents)
+        if agents is None: agents = self.agents_names
+        if verify_train_success:
+            agents = [ag for ag in agents if self.last_train_success[ag]]
 
-        axs = utils.Axes(5+len(train_estimators), W, axsize, fontsize=15)
+        axs = utils.Axes(7+len(train_estimators), W, axsize, fontsize=15)
         a = 0
 
         for est_name, est in train_estimators.items():
@@ -875,14 +913,15 @@ class Experiment:
             axs.labs(a, 'train iteration', f'{est_name} score')
             a += 1
 
-        agents, ids = np.unique(test_df.agent.values, return_index=True)
-        agents = agents[np.argsort(ids)]
+        # agents, ids = np.unique(test_df.agent.values, return_index=True)
+        # agents = agents[np.argsort(ids)]
         for agent in agents:
-            if verify_train_success and not self.last_train_success[agent]:
-                continue
+            # if verify_train_success and not self.last_train_success[agent]:
+            #     continue
             scores = test_df.score[test_df.agent==agent].values
-            utils.plot_quantiles(scores, Q=np.arange(Q+1)/100, showmeans=True, ax=axs[a],
-                                 label=f'{agent} ({np.mean(scores):.1f})')
+            utils.plot_quantiles(
+                scores, Q=np.arange(Q+1)/100, showmeans=True, ax=axs[a],
+                label=f'{agent} ({np.mean(scores):.1f})')
         axs[a].set_xlim((0,Q))
         axs.labs(a, 'episode quantile [%]', 'score')
         axs[a].legend(fontsize=13)
@@ -892,7 +931,7 @@ class Experiment:
                      y='samples_used', ci=None, ax=axs[a])
         axs[a].set_xlim((0,None))
         plt.setp(axs[a].get_legend().get_texts(), fontsize='13')
-        axs.labs(a, 'train iteration', 'samples (episodes) used [%]')
+        axs.labs(a, 'train iteration', 'sample size [%]')
         a += 1
 
         sns.lineplot(data=samples_usage, x='train_iteration', hue='agent',
@@ -902,9 +941,6 @@ class Experiment:
         axs.labs(a, 'train iteration', 'effective sample size [%]')
         a += 1
 
-        if verify_train_success:
-            valid_agents = [a for a in self.agents_names if self.last_train_success[a]]
-            weights = weights[weights.agent.isin(valid_agents)]
         iter_resol = 1 + weights.train_iteration.values[-1] // 4
         weights['iter_rounded'] = [iter_resol*(it//iter_resol) \
                                    for it in weights.train_iteration]
@@ -914,23 +950,56 @@ class Experiment:
         axs[a].legend(fontsize=13)
         a += 1
 
+        self.analyze_exposure(agents, axs=axs, a0=a)
+        a += 2
+
+        axs[a].axhline(100*self.dynamics[0], color='k', label='original')
         for agent in agents:
             ceh = self.ce_history[agent]
             y = [100*yy[-1] for yy in ceh['dyn_dists']]
-            axs[a].plot(np.arange(len(y)), y, '.-', label=agent)
+            if len(y) > 1:
+                axs[a].plot(np.arange(len(y)), y, '.-', label=agent)
         axs[a].set_ylim((0, 100))
-        axs.labs(a, 'train iteration', 'kill prob [%]')
+        axs.labs(a, 'train iteration', 'average kill probability [%]')
         axs[a].legend(fontsize=13)
         a += 1
 
         plt.tight_layout()
         return axs
 
-    def show_tests(self, agents=None, n=5, **kwargs):
+    def analyze_exposure(self, agents=None, good_threshold=-32, axs=None, a0=0):
+        if agents is None: agents = self.agents_names
+        if axs is None: axs = utils.Axes(2, 2, (5.5,3.5), fontsize=15)
+        good_episodes = {}
+        for ag in agents:
+            dd = self.dd[(self.dd.group=='train')&(self.dd.agent==ag)]
+            n_samp = (np.array(self.samples_usage[ag]) * self.optim_freq).astype(int)
+            n_iter = dd.ag_updates.values[-1] + 1
+
+            # total "good" episodes
+            used_scores = [dd[dd.ag_updates==i].score.values for i in range(n_iter)]
+            good_episodes[ag] = [np.sum(np.array(s)>good_threshold) \
+                                 for s in used_scores]
+            axs[a0+0].plot(good_episodes[ag], label=ag)
+
+            # "good" episodes exposed to optimizer
+            used_scores = [sorted(dd[dd.ag_updates==i].score.values)[:n_samp[i]] \
+                           for i in range(n_iter)]
+            good_episodes[ag] = [np.sum(np.array(s)>good_threshold) \
+                                 for s in used_scores]
+            axs[a0+1].plot(good_episodes[ag], label=ag)
+        axs.labs(a0+0, 'train iteration', 'successful episodes')
+        axs.labs(a0+1, 'train iteration', 'successful episodes\nfed to optimizer')
+        axs[a0+0].legend(fontsize=13)
+        axs[a0+1].legend(fontsize=13)
+        plt.tight_layout()
+        return axs
+
+    def show_tests(self, agents=None, n=5, clean_plot=False, **kwargs):
         if agents is None: agents = self.agents_names
         if isinstance(agents, str): agents = [agents]
 
-        axs = utils.Axes(n*len(agents), n, (2.7, 2.7), grid=False)
+        axs = utils.Axes(n*len(agents), n, (2.7, 2.7), fontsize=15, grid=False)
         a = 0
 
         for agent in agents:
@@ -945,39 +1014,17 @@ class Experiment:
             for i in range(n):
                 s, T = self.show_episode((agent, 'test', episodes[i]), ax=axs[a],
                                          verbose=0, **kwargs)
-                axs.labs(a, None, None,
-                         f'{agent} ({ids[i]+1}/{N})\nscore={scores[i]:.0f} ({T} steps)'
-                         f'\nreproduced={s:.0f}')
+                if clean_plot:
+                    axs.labs(a, None, None, f'{agent}: score={scores[i]:.0f}')
+                    axs[a].axis('off')
+                else:
+                    axs.labs(a, None, None,
+                             f'{agent} ({ids[i]+1}/{N})'
+                             f'\nscore={scores[i]:.0f} ({T} steps)'
+                             f'\nreproduced={s:.0f}')
                 a += 1
 
         plt.tight_layout()
-        return axs
-
-    def analyze_exposure(self, agents=None, good_threshold=-32):
-        if agents is None: agents = self.agents_names
-        axs = utils.Axes(2, 2, (7,4), fontsize=15)
-        good_episodes = {}
-        for ag in agents:
-            dd = self.dd[(self.dd.group=='train')&(self.dd.agent==ag)]
-            n_samp = (np.array(self.samples_usage[ag]) * self.optim_freq).astype(int)
-            n_iter = dd.ag_updates.values[-1] + 1
-
-            # total "good" episodes
-            used_scores = [dd[dd.ag_updates==i].score.values for i in range(n_iter)]
-            good_episodes[ag] = [np.sum(np.array(s)>good_threshold) \
-                                 for s in used_scores]
-            axs[0].plot(good_episodes[ag], label=ag)
-
-            # "good" episodes exposed to optimizer
-            used_scores = [sorted(dd[dd.ag_updates==i].score.values)[:n_samp[i]] \
-                           for i in range(n_iter)]
-            good_episodes[ag] = [np.sum(np.array(s)>good_threshold) \
-                                 for s in used_scores]
-            axs[1].plot(good_episodes[ag], label=ag)
-        axs.labs(0, 'train iteration', 'episodes reaching target')
-        axs.labs(1, 'train iteration', 'episodes reaching target\n*and* fed to optimizer')
-        axs[0].legend(fontsize=13)
-        axs[1].legend(fontsize=13)
         return axs
 
     def main(self, **analysis_args):
