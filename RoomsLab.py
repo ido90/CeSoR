@@ -979,7 +979,8 @@ class Experiment:
         plt.tight_layout()
         return axs
 
-    def analyze_exposure(self, agents=None, good_threshold=-32, axs=None, a0=0):
+    def analyze_exposure(self, agents=None, good_threshold=None, axs=None, a0=0):
+        if good_threshold is None: good_threshold = -2*self.maze_mode
         if agents is None: agents = self.agents_names
         if axs is None: axs = utils.Axes(2, 2, (5.5,3.5), fontsize=15)
         good_episodes = {}
