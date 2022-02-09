@@ -44,11 +44,13 @@ class Optimizer:
         self.samples_per_step = []
         # https://en.wikipedia.org/wiki/Effective_sample_size#Weighted_samples
         self.eff_samples_per_step = []
+        self.loss_history = []
 
     def reset_training(self):
         self.n_updates = 0
         self.samples_per_step = []
         self.eff_samples_per_step = []
+        self.loss_history = []
         self.reset_metrics()
 
     def reset_metrics(self):
@@ -107,6 +109,7 @@ class Optimizer:
             if torch.isnan(weighted_mean_score): # TODO tmp
                 import pdb
                 pdb.set_trace()
+            self.loss_history.append(weighted_mean_score.item())
             weighted_mean_score.backward()
         else:
             # optimize CVaR
@@ -133,6 +136,7 @@ class Optimizer:
             # derive loss
             loss = torch.stack([- w[i] * log_probs[i] * (scores[i]-q) \
                                 for i in range(i0+1)], 0).sum() / w_sum
+            self.loss_history.append(loss.item())
             loss.backward()
 
         if DEBUG_MODE:

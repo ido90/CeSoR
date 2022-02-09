@@ -30,6 +30,7 @@ class Experiment:
                  kill_prob=0.05, beta_kill_dist=True, clip_factor=None,
                  action_noise=0.2, max_distributed=0, normalize_returns=True,
                  optimizer=optim.Adam, optim_freq=100, episodic_loss=True,
+                 zero_loss_tolerance=10,
                  cvar=1, gradual_cvar=False, ref_cvar_quantile=True,
                  gamma=1.0, lr=1e-2, weight_decay=0.0, state_mode='mid_map2',
                  use_ce=False, ce_perc=0.2, ce_source_perc=0, ce_dyn=True, ce_s0=False,
@@ -66,6 +67,7 @@ class Experiment:
         self.optimizer_constructor = optimizer
         self.optim_freq = optim_freq
         self.episodic_loss = episodic_loss
+        self.zero_loss_tolerance = zero_loss_tolerance
         self.cvar = cvar
         self.gradual_cvar = gradual_cvar
         self.ref_cvar_quantile = ref_cvar_quantile
@@ -669,10 +671,20 @@ class Experiment:
                         best_valid_score = valid_score
                         best_valid_mean = valid_mean
 
-            self.samples_usage[agent_nm] = optimizer_wrap.samples_per_step
-            self.eff_samples_usage[agent_nm] = optimizer_wrap.eff_samples_per_step
-            self.ce_history[agent_nm] = ce.history
-            self.ce_ws[agent_nm] = ce.w_history
+                self.samples_usage[agent_nm] = optimizer_wrap.samples_per_step
+                self.eff_samples_usage[agent_nm] = optimizer_wrap.eff_samples_per_step
+                self.ce_history[agent_nm] = ce.history
+                self.ce_ws[agent_nm] = ce.w_history
+
+                # stop if loss==0 for a while (e.g. all returns are the same...)
+                losses = optimizer_wrap.loss_history
+                if self.zero_loss_tolerance and \
+                        len(losses) > self.zero_loss_tolerance and \
+                        np.all([l==0 for l in losses[-self.zero_loss_tolerance:]]):
+                    if verbose >= 1:
+                        print(f'{agent_nm} training stopped after {i} episodes and '
+                              f'{self.zero_loss_tolerance} steps with zero loss.')
+                    break
 
             # log
             if log_freq > 0 and ((i + 1) % log_freq) == 0:
@@ -828,7 +840,7 @@ class Experiment:
         # training samples used per iteration
         samples_usage = pd.DataFrame()
         for agent in self.agents_names:
-            if agents is None or agent in agents:
+            if (agents is None or agent in agents) and agent in self.samples_usage:
                 samples_usage = pd.concat((samples_usage, pd.DataFrame(dict(
                     agent = agent,
                     train_iteration = np.arange(len(self.samples_usage[agent])),
@@ -839,7 +851,7 @@ class Experiment:
         # sampler weights
         weights = pd.DataFrame()
         for agent in self.agents_names:
-            if agents is None or agent in agents:
+            if (agents is None or agent in agents) and agent in self.ce_ws:
                 ws = self.ce_ws[agent]
                 n_iters = len(ws)
                 n_samps = len(ws[0])
