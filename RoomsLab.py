@@ -34,7 +34,8 @@ class Experiment:
                  cvar=1, gradual_cvar=False, ref_cvar_quantile=True,
                  gamma=1.0, lr=1e-2, weight_decay=0.0, state_mode='mid_map2',
                  use_ce=False, ce_perc=0.2, ce_source_perc=0, ce_dyn=True, ce_s0=False,
-                 ce_IS=True, ce_ref=False, log_freq=1000, T0=1, Tgamma=1, title=''):
+                 ce_IS=True, ce_w_clip=5, ce_ref=False,
+                 log_freq=2000, T0=1, Tgamma=1, title=''):
         self.title = title
         self.global_seed = global_seed
         np.random.seed(self.global_seed)
@@ -92,7 +93,7 @@ class Experiment:
 
         self.ce = CEM.CEM(dyn_dist=self.dynamics, modify_dyn=ce_dyn, modify_s0=ce_s0,
                           update_freq=use_ce*self.optim_freq, update_perc=ce_perc,
-                          source_sample_perc=ce_source_perc, IS=ce_IS,
+                          source_sample_perc=ce_source_perc, IS=ce_IS, w_clip=ce_w_clip,
                           valid_ref=ce_ref, mode='Rooms')
         self.ce_history = {}
         self.ce_ws = {}
@@ -244,7 +245,12 @@ class Experiment:
 
     def add_agent(self, agent, title=None, generate_tables=True):
         '''agent = agent OR (constructor, kwargs)'''
-        if isinstance(agent, (tuple,list)): agent = agent[0](**agent[1])
+        if isinstance(agent, (tuple,list)):
+            args = agent[1]
+            args['state_dim'] = self.maze_size if self.state_mode=='full' \
+                else STATE_DIM[self.state_mode]
+            args['act_dim'] = 4
+            agent = agent[0](**args)
         if title is None:
             title = agent.title
         else:
@@ -464,6 +470,7 @@ class Experiment:
         Tgamma = get_value('Tgamma')
         cvar = get_value('cvar')
         gradual_cvar = get_value('gradual_cvar')
+        ref_cvar_quantile = get_value('ref_cvar_quantile')
 
         # CE hparams
         if isinstance(agent.train_hparams, dict) and \
@@ -477,16 +484,17 @@ class Experiment:
             valid_ref = get_value('ce_'+'valid_ref')
             source_perc = get_value('ce_'+'source_perc')
             IS = get_value('ce_'+'IS')
+            w_clip = get_value('ce_'+'w_clip')
             ce = CEM.CEM(mode='Rooms', dyn_dist=self.dynamics, modify_dyn=modify_dyn,
                          modify_s0=modify_s0, update_freq=update_freq*self.optim_freq,
-                         source_sample_perc=source_perc,
+                         source_sample_perc=source_perc, w_clip=w_clip,
                          update_perc=update_perc, IS=IS, valid_ref=valid_ref)
         else:
             self.ce.reset()
             ce = self.ce
 
         return lr, weight_decay, optim_freq, episodic_loss, normalize_returns, \
-               T0, Tgamma, cvar, gradual_cvar, ce
+               T0, Tgamma, cvar, ref_cvar_quantile, gradual_cvar, ce
 
     def train_with_dependencies(self, agents_names=None, **kwargs):
         if agents_names is None: agents_names = self.agents_names.copy()
@@ -604,7 +612,8 @@ class Experiment:
         agent.train()
 
         lr, weight_decay, optim_freq, episodic_loss, normalize_returns, \
-        T0, Tgamma, cvar, gradual_cvar, ce = self.get_train_hparams(agent)
+        T0, Tgamma, cvar, ref_cvar_quantile, gradual_cvar, ce = \
+            self.get_train_hparams(agent)
 
         valid_fun = (lambda x: np.mean(sorted(x)[:int(np.ceil(cvar*len(x)))])) \
             if (0<cvar<1) else np.mean
@@ -648,7 +657,7 @@ class Experiment:
                     ref_scores = optimizer_wrap.curr_scores[:ce.n_source]
                 else:
                     ref_scores = self.valid_scores[agent_nm][-1]
-            elif self.ref_cvar_quantile:
+            elif ref_cvar_quantile:
                 ref_scores = optimizer_wrap.curr_scores
 
             # optimize
@@ -682,7 +691,7 @@ class Experiment:
                         len(losses) > self.zero_loss_tolerance and \
                         np.all([l==0 for l in losses[-self.zero_loss_tolerance:]]):
                     if verbose >= 1:
-                        print(f'{agent_nm} training stopped after {i} episodes and '
+                        print(f'{agent_nm} training stopped after {i+1} episodes and '
                               f'{self.zero_loss_tolerance} steps with zero loss.')
                     break
 
@@ -700,7 +709,7 @@ class Experiment:
         if verbose >= 1:
             print(f'{agent_nm:s} trained ({time.time() - t0:.0f}s).')
 
-    def running_cvar_fun(self, cvar, gradual_cvar, n_iters, switch_time=0.8):
+    def running_cvar_fun(self, cvar, gradual_cvar, n_iters, switch_time=0.6):
         if not gradual_cvar:
             return None
         if cvar and (0 < cvar < 1) and gradual_cvar:
@@ -939,28 +948,30 @@ class Experiment:
         axs[a].legend(fontsize=13)
         a += 1
 
-        sns.lineplot(data=samples_usage, x='train_iteration', hue='agent',
-                     y='samples_used', ci=None, ax=axs[a])
-        axs[a].set_xlim((0,None))
-        plt.setp(axs[a].get_legend().get_texts(), fontsize='13')
-        axs.labs(a, 'train iteration', 'sample size [%]')
-        a += 1
+        if len(samples_usage) > 0:
+            sns.lineplot(data=samples_usage, x='train_iteration', hue='agent',
+                         y='samples_used', ci=None, ax=axs[a])
+            axs[a].set_xlim((0,None))
+            plt.setp(axs[a].get_legend().get_texts(), fontsize='13')
+            axs.labs(a, 'train iteration', 'sample size [%]')
+            a += 1
 
-        sns.lineplot(data=samples_usage, x='train_iteration', hue='agent',
-                     y='effective_samples_used', ci=None, ax=axs[a])
-        axs[a].set_xlim((0,None))
-        plt.setp(axs[a].get_legend().get_texts(), fontsize='13')
-        axs.labs(a, 'train iteration', 'effective sample size [%]')
-        a += 1
+            sns.lineplot(data=samples_usage, x='train_iteration', hue='agent',
+                         y='effective_samples_used', ci=None, ax=axs[a])
+            axs[a].set_xlim((0,None))
+            plt.setp(axs[a].get_legend().get_texts(), fontsize='13')
+            axs.labs(a, 'train iteration', 'effective sample size [%]')
+            a += 1
 
-        iter_resol = 1 + weights.train_iteration.values[-1] // 4
-        weights['iter_rounded'] = [iter_resol*(it//iter_resol) \
-                                   for it in weights.train_iteration]
-        sns.boxplot(data=weights, x='iter_rounded', hue='agent', y='weight',
-                    showmeans=True, ax=axs[a])
-        axs.labs(a, 'train iteration', 'weight')
-        axs[a].legend(fontsize=13)
-        a += 1
+        if len(weights):
+            iter_resol = 1 + weights.train_iteration.values[-1] // 4
+            weights['iter_rounded'] = [iter_resol*(it//iter_resol) \
+                                       for it in weights.train_iteration]
+            sns.boxplot(data=weights, x='iter_rounded', hue='agent', y='weight',
+                        showmeans=True, ax=axs[a])
+            axs.labs(a, 'train iteration', 'weight')
+            axs[a].legend(fontsize=13)
+            a += 1
 
         self.analyze_exposure(agents, axs=axs, a0=a)
         a += 2
@@ -980,14 +991,14 @@ class Experiment:
         return axs
 
     def analyze_exposure(self, agents=None, good_threshold=None, axs=None, a0=0):
-        if good_threshold is None: good_threshold = -2*self.maze_mode
+        if good_threshold is None: good_threshold = -32*self.maze_mode
         if agents is None: agents = self.agents_names
         if axs is None: axs = utils.Axes(2, 2, (5.5,3.5), fontsize=15)
         good_episodes = {}
         for ag in agents:
             dd = self.dd[(self.dd.group=='train')&(self.dd.agent==ag)]
             n_samp = (np.array(self.samples_usage[ag]) * self.optim_freq).astype(int)
-            n_iter = dd.ag_updates.values[-1] + 1
+            n_iter = min(dd.ag_updates.values[-1] + 1, len(n_samp))
 
             # total "good" episodes
             used_scores = [dd[dd.ag_updates==i].score.values for i in range(n_iter)]

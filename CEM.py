@@ -5,8 +5,8 @@ from scipy import stats
 class CEM:
     def __init__(self, mode='CartPole', dyn_dist=None, s0_dist=None,
                  modify_dyn=True, modify_s0=False, source_sample_perc=0,
-                 update_freq=100, update_perc=0.2, IS=False, valid_ref=False,
-                 use_beta=True, verbose=1):
+                 update_freq=100, update_perc=0.2, IS=False, w_clip=5,
+                 valid_ref=False, use_beta=True, verbose=1):
         self.mode = mode
         self.verbose = verbose
         if dyn_dist is None:
@@ -21,6 +21,7 @@ class CEM:
         self.update_freq = update_freq
         self.update_perc = update_perc
         self.IS = IS
+        self.w_clip = w_clip
         self.valid_ref = valid_ref
         self.n_source = int(np.ceil(source_sample_perc * self.update_freq)) \
             if source_sample_perc<=1 else source_sample_perc
@@ -164,9 +165,10 @@ class CEM:
 
         return lr_dyn * lr_s0
 
-    def sample_weight(self, dyn, s0, use_source=False, w_clip=5):
+    def sample_weight(self, dyn, s0, use_source=False, w_clip=None):
         if not self.IS:
             return 1
+        if w_clip is None: w_clip = self.w_clip
         lr = self.likelihood_ratio(dyn, s0, use_source)
         if w_clip:
             lr = np.clip(lr, 1/w_clip, w_clip)
