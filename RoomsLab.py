@@ -925,24 +925,24 @@ class Experiment:
         axs = utils.Axes(7+len(train_estimators), W, axsize, fontsize=15)
         a = 0
 
+        # Train scores
         for est_name, est in train_estimators.items():
             sns.lineplot(data=train_valid_df, x='train_iteration', hue='agent',
                          style='group', y='score', estimator=est, ax=axs[a])
             axs[a].set_xlim((0,None))
-            # axs[a].set_ylim((max(-200, axs[a].get_ylim()[0]), None))
             plt.setp(axs[a].get_legend().get_texts(), fontsize='13')
             axs.labs(a, 'train iteration', f'{est_name} score')
             a += 1
 
-        # agents, ids = np.unique(test_df.agent.values, return_index=True)
-        # agents = agents[np.argsort(ids)]
+        # Test scores
+        cvar = lambda x, alpha: np.mean(np.sort(x)[:int(np.ceil(alpha*len(x)))])
         for agent in agents:
-            # if verify_train_success and not self.last_train_success[agent]:
-            #     continue
             scores = test_df.score[test_df.agent==agent].values
             utils.plot_quantiles(
                 scores, Q=np.arange(Q+1)/100, showmeans=True, ax=axs[a],
                 label=f'{agent} ({np.mean(scores):.1f})')
+            print(f'{agent}:\tmean={np.mean(scores):.1f}\t'
+                  f'CVaR10={cvar(scores,0.1):.1f}\tCVaR05={cvar(scores,0.05):.1f}')
         axs[a].set_xlim((0,Q))
         axs.labs(a, 'episode quantile [%]', 'score')
         axs[a].legend(fontsize=13)
@@ -998,7 +998,7 @@ class Experiment:
         for ag in agents:
             dd = self.dd[(self.dd.group=='train')&(self.dd.agent==ag)]
             n_samp = (np.array(self.samples_usage[ag]) * self.optim_freq).astype(int)
-            n_iter = min(dd.ag_updates.values[-1] + 1, len(n_samp))
+            n_iter = min(dd.ag_updates.max() + 1, len(n_samp))
 
             # total "good" episodes
             used_scores = [dd[dd.ag_updates==i].score.values for i in range(n_iter)]
