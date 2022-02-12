@@ -15,25 +15,25 @@ import torch
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-def get_quantiles(X, Q=100, assume_sorted=False):
-    if not assume_sorted:
-        X = sorted(X)
-    N = len(X)
-    try:
-        n = len(Q)
-        Q = np.array(Q)
-    except:
-        Q = np.arange(0,1+1e-6,1/Q)
-        Q[-1] = 1
-        n = len(Q)
-    x = [X[int(q*(N-1))] for q in Q]
-    return x, Q
+def quantile(x, q, w=None, is_sorted=False):
+    if w is None:
+        return np.percentile(x, 100*q)
+    x = np.array(x)
+    w = np.array(w)
+    if not is_sorted:
+        ids = np.argsort(x)
+        x = x[ids]
+        w = w[ids]
+    w = np.cumsum(w) - 0.5*w
+    w -= w[0]
+    w /= w[-1]
+    return np.interp(q, w, x)
 
-def plot_quantiles(x, ax=None, Q=100, showmeans=False, plot_mean=False, means_args=None, **kwargs):
-    if plot_mean: showmeans = True # backward compatibility
+def plot_quantiles(x, ax=None, q=None, showmeans=False, means_args=None, **kwargs):
     if ax is None: ax = Axes(1,1)[0]
+    if q is None: q = np.arange(101) / 100
     m = np.mean(x)
-    x, q = get_quantiles(x, Q)
+    x = quantile(x, q)
     h = ax.plot(100*q, x, '-', **kwargs)
     if showmeans:
         if means_args is None: means_args = {}
