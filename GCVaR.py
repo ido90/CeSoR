@@ -42,7 +42,7 @@ class GCVaR:
         if filename is None: filename = f'models/{self.title}'
         filename += '.opt'
         obj = (
-            self.title, self.batch_size, self.alpha,
+            self.title, self.batch_size, self.alpha, self.alpha_scheduler,
             self.batch_count, self.sample_count, self.logprobs,
             self.scores, self.weights, self.selected,
             self.alphas, self.q_alpha, self.sample_size,
@@ -56,7 +56,7 @@ class GCVaR:
         filename += '.opt'
         with open(filename, 'rb') as h:
             obj = pkl.load(h)
-        self.title, self.batch_size, self.alpha, \
+        self.title, self.batch_size, self.alpha, self.alpha_scheduler, \
         self.batch_count, self.sample_count, self.logprobs, \
         self.scores, self.weights, self.selected, \
         self.alphas, self.q_alpha, self.sample_size, \
@@ -131,7 +131,8 @@ class GCVaR:
             q = utils.quantile(ref_scores, alpha, w)
 
         # get selected episodes for optimization
-        selected = self.scores[-1] < q
+        selected = (self.scores[-1] < q) if alpha<1 else \
+            np.ones_like(self.scores[-1], dtype=np.bool)
 
         # record everything
         self.alphas.append(alpha)
@@ -161,7 +162,7 @@ class GCVaR:
             import pdb
             pdb.set_trace()
 
-        self.o.zero_grad() # TODO make sure not needed before
+        self.o.zero_grad()
         loss.backward()
         self.o.step()
 
