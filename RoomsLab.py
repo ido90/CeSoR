@@ -14,10 +14,10 @@ import torch.optim as optim
 import gym
 
 import rooms
-import Agents, Optim, CEM
+import Agents, GCVaR, CEM
 import utils
 
-STATE_DIM = dict(xy=2, local_map=9, both=11, mid_map=25, mid_map2=27)
+STATE_DIM = dict(xy=2, local_map=9, both=11, mid_map=25, mid_map_xy=27)
 
 class Experiment:
 
@@ -27,14 +27,13 @@ class Experiment:
                  test_episodes=100, global_seed=0, maze_mode=1, maze_size=None,
                  max_episode_steps=None,
                  detailed_rewards=False, valid_freq=10, save_best_model=True,
-                 kill_prob=0.05, beta_kill_dist=True, clip_factor=None,
-                 action_noise=0.2, max_distributed=0, normalize_returns=True,
-                 optimizer=optim.Adam, optim_freq=100, episodic_loss=True,
-                 zero_loss_tolerance=10,
-                 cvar=1, gradual_cvar=False, ref_cvar_quantile=True,
-                 gamma=1.0, lr=1e-2, weight_decay=0.0, state_mode='mid_map2',
-                 use_ce=False, ce_perc=0.2, ce_source_perc=0, ce_dyn=True, ce_s0=False,
-                 ce_IS=True, ce_w_clip=5, ce_ref=False,
+                 kill_prob=0.05, beta_kill_dist=True,
+                 action_noise=0.2, max_distributed=0,
+                 optimizer=optim.Adam, optim_freq=100, optim_q_ref=True,
+                 cvar=1, soft_cvar=0, zero_loss_tolerance=20,
+                 gamma=1.0, lr=1e-2, weight_decay=0.0, state_mode='mid_map_xy',
+                 use_ce=False, ce_alpha=0.2, ce_ref_mode='train', ce_ref_alpha=None,
+                 ce_n_orig=None, ce_w_clip=5,
                  log_freq=2000, T0=1, Tgamma=1, title=''):
         self.title = title
         self.global_seed = global_seed
@@ -57,22 +56,20 @@ class Experiment:
         self.valid_freq = valid_freq
         self.save_best_model = save_best_model
 
-        self.dynamics = np.array([kill_prob])
-        self.clip_factor = None if clip_factor is None else np.array(clip_factor)
+        self.kill_prob = kill_prob
         # If true - model killing probability using Beta(a,2-a), whose mean
         # is kill_prob=a/2 and variance is a*(2-a)/12.
         # https://en.wikipedia.org/wiki/Beta_distribution
         self.use_beta_dist = beta_kill_dist
         self.action_noise = action_noise
 
+        self.optimizers = {}
         self.optimizer_constructor = optimizer
         self.optim_freq = optim_freq
-        self.episodic_loss = episodic_loss
+        self.optim_q_ref = optim_q_ref
         self.zero_loss_tolerance = zero_loss_tolerance
         self.cvar = cvar
-        self.gradual_cvar = gradual_cvar
-        self.ref_cvar_quantile = ref_cvar_quantile
-        self.normalize_returns = normalize_returns
+        self.soft_cvar = soft_cvar
         self.gamma = gamma # note: 0.98^100=13%, 0.99^200=13%
         self.lr = lr
         self.weight_decay = weight_decay
@@ -87,16 +84,17 @@ class Experiment:
         self.agents_names = None
         self.last_train_success = {}
         self.valid_scores = {}
-        self.samples_usage = {}
-        # https://en.wikipedia.org/wiki/Effective_sample_size#Weighted_samples
-        self.eff_samples_usage = {}
 
-        self.ce = CEM.CEM(dyn_dist=self.dynamics, modify_dyn=ce_dyn, modify_s0=ce_s0,
-                          update_freq=use_ce*self.optim_freq, update_perc=ce_perc,
-                          source_sample_perc=ce_source_perc, IS=ce_IS, w_clip=ce_w_clip,
-                          valid_ref=ce_ref, mode='Rooms')
-        self.ce_history = {}
-        self.ce_ws = {}
+        self.CEs = {}
+        if ce_ref_alpha is None: ce_ref_alpha = self.cvar
+        if ce_n_orig is None:
+            ce_n_orig = int(0.2*self.optim_freq) if ce_ref_mode=='train' else 0
+        self.ce_update_freq = use_ce
+        self.ce_w_clip = ce_w_clip
+        self.ce_ref_mode = ce_ref_mode
+        self.ce_ref_alpha = ce_ref_alpha
+        self.ce_n_orig = ce_n_orig
+        self.ce_internal_alpha = ce_alpha
 
         self.make_env()
         self.generate_test_episodes()
@@ -111,7 +109,7 @@ class Experiment:
             id='RoomsEnv-v0',
             entry_point='rooms:RoomsEnv',
             kwargs=dict(
-                mode=self.maze_mode, kill_prob=self.dynamics[0],
+                mode=self.maze_mode, kill_prob=self.kill_prob,
                 action_noise=self.action_noise,
                 rows=self.maze_size, max_steps=self.max_episode_steps,
                 detailed_r=self.detailed_rewards),
@@ -151,21 +149,17 @@ class Experiment:
         get_key = lambda i: (self.dd.agent[i], self.dd.group[i], self.dd.episode[i])
         self.episode_map = {get_key(i):i for i in range(len(self.dd))}
 
-    def draw_episode_params(self, dyn_dist=None, s0_dist=None,
-                            dyn_clip=None, seed=None):
+    def draw_episode_params(self, dyn_dist=None, s0_dist=None, seed=None):
         if seed is not None: np.random.seed(seed)
         if s0_dist is None:
             s0_dist = (0.6,0.6,6.4,6.4) if self.maze_mode==2 else (0.6,0.6,3.6,3.6)
-        if dyn_dist is None: dyn_dist = self.dynamics
-        if dyn_clip is None: dyn_clip = self.clip_factor
+        if dyn_dist is None: dyn_dist = self.kill_prob
         dyn_dist = np.array(dyn_dist)
 
         if self.use_beta_dist:
             dyn = np.random.beta(2*dyn_dist, 2-2*dyn_dist)
         else:
             dyn = np.random.exponential(np.array(dyn_dist), size=(len(dyn_dist),))
-        if dyn_clip:
-            dyn = np.clip(dyn, self.dynamics / dyn_clip, dyn_clip * self.dynamics)
 
         a = np.array(s0_dist[:2])
         b = np.array(s0_dist[2:])
@@ -188,6 +182,10 @@ class Experiment:
         if isinstance(agents_names, str): agents_names = [agents_names]
         dd_base = self.init_dd(self.n_train, temperature=1, group='train',
                                inplace=False)
+
+        init_states = np.array(
+            [self.draw_episode_params()[1] for _ in range(self.n_train)])
+        dd_base.iloc[:, 7:9] = init_states
 
         for agent_nm in agents_names:
             dd = dd_base.copy()
@@ -341,7 +339,7 @@ class Experiment:
                 elif self.state_mode == 'both':
                     agent_input = np.concatenate((
                         agent_input, self.env.get_local_map().reshape(-1)))
-                elif self.state_mode == 'mid_map2':
+                elif self.state_mode == 'mid_map_xy':
                     agent_input = np.concatenate((
                         agent_input, self.env.get_local_map(rad=2).reshape(-1)))
                 elif self.state_mode == 'full':
@@ -442,83 +440,144 @@ class Experiment:
     ###############   TRAIN   ###############
 
     def draw_train_episode_params(self, idx, ce=None):
-        if ce is None: ce = self.ce
-        dyn, s0, w = ce.sample(self.clip_factor)
-        self.dd.iloc[idx, 6:7], self.dd.iloc[idx, 7:9] = dyn, s0
+        if ce is None: ce = self.CEs[self.dd.agent[idx]]
+        kp, w = ce.sample()
+        self.dd.loc[idx, 'dyn_kp'] = kp
         self.dd.loc[idx, 'ag_temperature'] = self.T
         return w
 
-    def ce_update(self, idx, score, ce=None, cvar=1, ref_scores=None):
-        if ce is None: ce = self.ce
-        dyn = self.dd.iloc[idx, 6:7].values.astype(np.float)
-        s0 = self.dd.iloc[idx, 7:9].values.astype(np.float)
-        q_ref = np.percentile(ref_scores, 100*cvar) if 0<cvar<1 else None
-        ce.update_recording(score, dyn, s0, update_dists=True,
-                            update_q_ref=q_ref, cvar=cvar)
-
-    def get_train_hparams(self, agent=None):
-        # optimization hparams
+    def prepare_training(self, agent=None):
+        # get optimization hparams
         get_value = lambda x: agent.train_hparams[x] \
             if agent.train_hparams is not None and x in agent.train_hparams \
             else getattr(self, x)
         lr = get_value('lr')
         weight_decay = get_value('weight_decay')
         optim_freq = get_value('optim_freq')
-        episodic_loss = get_value('episodic_loss')
-        normalize_returns = get_value('normalize_returns')
+        optim_q_ref = get_value('optim_q_ref')
         T0 = get_value('T0')
         Tgamma = get_value('Tgamma')
         cvar = get_value('cvar')
-        gradual_cvar = get_value('gradual_cvar')
-        ref_cvar_quantile = get_value('ref_cvar_quantile')
+        soft_cvar = get_value('soft_cvar')
 
-        # CE hparams
-        if isinstance(agent.train_hparams, dict) and \
-                np.any([s.startswith('ce_') for s in agent.train_hparams]):
-            get_value = lambda x: agent.train_hparams[x] if \
-                x in agent.train_hparams else getattr(self.ce, x[3:])
-            modify_dyn = get_value('ce_'+'modify_dyn')
-            modify_s0 = get_value('ce_'+'modify_s0')
-            update_freq = get_value('ce_'+'update_freq')
-            update_perc = get_value('ce_'+'update_perc')
-            valid_ref = get_value('ce_'+'valid_ref')
-            source_perc = get_value('ce_'+'source_perc')
-            IS = get_value('ce_'+'IS')
-            w_clip = get_value('ce_'+'w_clip')
-            ce = CEM.CEM(mode='Rooms', dyn_dist=self.dynamics, modify_dyn=modify_dyn,
-                         modify_s0=modify_s0, update_freq=update_freq*self.optim_freq,
-                         source_sample_perc=source_perc, w_clip=w_clip,
-                         update_perc=update_perc, IS=IS, valid_ref=valid_ref)
+        # prepare optimizer
+        valid_fun = (lambda x: np.mean(sorted(x)[:int(np.ceil(cvar*len(x)))])) \
+            if (0<cvar<1) else np.mean
+        cvar_scheduler = GCVaR.alpha_scheduler(soft_cvar, self.n_train)
+        optimizer = self.optimizer_constructor(
+            agent.parameters(), lr=lr, weight_decay=weight_decay)
+        optimizer_wrap = GCVaR.GCVaR(
+            optimizer, optim_freq, cvar, cvar_scheduler, title=agent.title)
+        self.optimizers[agent.title] = optimizer_wrap
+
+        # get CE hparams
+        update_freq = get_value('ce_update_freq')
+        w_clip = get_value('ce_w_clip')
+        ref_mode = get_value('ce_ref_mode')
+        ref_alpha = get_value('ce_ref_alpha')
+        n_orig = get_value('ce_n_orig')
+        internal_alpha = get_value('ce_internal_alpha')
+
+        # prepare CE
+        ce = CEM.CEM_Beta_1D(
+            self.kill_prob, batch_size=update_freq * self.optim_freq,
+            ref_mode=ref_mode, ref_alpha=ref_alpha, w_clip=w_clip,
+            n_orig_per_batch=n_orig, internal_alpha=internal_alpha,
+            title=agent.title)
+        self.CEs[agent.title] = ce
+
+        return optimizer_wrap, valid_fun, optim_q_ref, T0, Tgamma, \
+               ref_mode=='valid', ce
+
+    def train_agent(self, agent_nm, log_freq=None, verbose=1, **kwargs):
+        if log_freq is None: log_freq = self.log_freq
+        t0 = time.time()
+        agent = self.agents[agent_nm]
+        if agent.pretrained_filename is not None:
+            agent.load(agent.pretrained_filename)
+        agent.train()
+
+        optimizer_wrap, valid_fun, optim_q_ref, T0, Tgamma, ce_valid, ce = \
+            self.prepare_training(agent)
+
+        # get episodes
+        ids = np.arange(len(self.dd))[
+            (self.dd.agent == agent_nm) & (self.dd.group == 'train')]
+
+        self.T = T0
+        self.valid_scores[agent_nm] = [
+            self.test(agent_nm, 'valid', update_inplace=False, temperature=0,
+                      verbose=0)]
+        valid_score = valid_fun(self.valid_scores[agent_nm][-1])
+        valid_mean = np.mean(self.valid_scores[agent_nm][-1])
+        best_valid_score = valid_score
+        best_valid_mean = valid_mean
+        if self.save_best_model:
+            self.save_agent(agent)
+
+        for i, idx in enumerate(ids):
+            # draw episode params
+            w = self.draw_train_episode_params(idx, ce)
+
+            # run episode
+            score, log_prob, ret_loss, n_steps = self.run_episode(
+                idx, agent, update_res=True, temperature=self.T, **kwargs)
+
+            # update CEM
+            if ce_valid:
+                ce.update_ref_scores(self.valid_scores[agent_nm][-1])
+            ce.update(score, f'models/{self.title}_{agent_nm}')
+
+            # get reference scores for distribution estimation
+            ref_scores = None
+            if ce.n_orig_per_batch > 1:
+                ref_scores = optimizer_wrap.scores[-1][:ce.n_orig_per_batch]
+            elif optim_q_ref:
+                ref_scores = self.valid_scores[agent_nm][-1]
+
+            # optimize
+            if optimizer_wrap.step(w, log_prob, score, ref_scores,
+                                   f'models/{self.title}_{agent_nm}'):
+                agent.n_updates += 1
+                self.T *= Tgamma
+                # validation
+                if (agent.n_updates % self.valid_freq) == 0:
+                    self.valid_scores[agent_nm].append(
+                        self.test(agent_nm, 'valid', update_inplace=False,
+                                  temperature=0, verbose=0))
+                    valid_score = valid_fun(self.valid_scores[agent_nm][-1])
+                    valid_mean = np.mean(self.valid_scores[agent_nm][-1])
+                    # save model
+                    if best_valid_score < valid_score or \
+                        (best_valid_score == valid_score and
+                         best_valid_mean <= valid_mean):
+                        if self.save_best_model:
+                            self.save_agent(agent)
+                        best_valid_score = valid_score
+                        best_valid_mean = valid_mean
+
+                # stop if loss==0 for a while (e.g. all returns are the same...)
+                losses = optimizer_wrap.losses
+                tol = self.zero_loss_tolerance
+                if tol and tol<len(losses) and np.all([l==0 for l in losses[-tol:]]):
+                    if verbose >= 1:
+                        print(f'{agent_nm} training stopped after {i+1} episodes and '
+                              f'{tol} steps with zero loss.')
+                    break
+
+            # log
+            if log_freq > 0 and ((i + 1) % log_freq) == 0:
+                print(f'\t[{i + 1:03d}/{len(ids):03d}, {agent_nm}] valid_mean='
+                      f'{valid_mean:.1f}\t({time.time() - t0:.0f}s)')
+
+        # load best model
+        if self.save_best_model:
+            self.load_agent(agent)
         else:
-            self.ce.reset()
-            ce = self.ce
+            self.save_agent(agent)
 
-        return lr, weight_decay, optim_freq, episodic_loss, normalize_returns, \
-               T0, Tgamma, cvar, ref_cvar_quantile, gradual_cvar, ce
-
-    def train_with_dependencies(self, agents_names=None, **kwargs):
-        if agents_names is None: agents_names = self.agents_names.copy()
-        if isinstance(agents_names, str): agents_names = [agents_names]
-
-        trained_agents = set()
-        while True:
-            curr_agents = [a for a in agents_names if (
-                    self.agents[a].pretrained_filename is None or
-                    self.agents[a].pretrained_filename in trained_agents)]
-            if not curr_agents:
-                break
-            if self.max_distributed:
-                curr_agents = curr_agents[:self.max_distributed]
-            print(f'Training {len(curr_agents)}/{len(agents_names)} '
-                  'remaining agents...')
-            self.train(curr_agents, **kwargs)
-            for a in curr_agents:
-                trained_agents.add(a)
-                agents_names.remove(a)
-
-        if agents_names:
-            print('Not all agents were reached in the training-dependencies tree!',
-                  agents_names)
+        if verbose >= 1:
+            print(f'{agent_nm:s} trained ({time.time() - t0:.0f}s).')
 
     def train(self, agents_names=None, distributed=True, log_freq=None,
               verbose=1, **kwargs):
@@ -568,13 +627,29 @@ class Experiment:
                 self.last_train_success[agent_nm] = d[0]
                 self.dd[(self.dd.agent == agent_nm) & (self.dd.group == 'train')] = d[1]
                 self.valid_scores[agent_nm] = d[2]
-                self.samples_usage[agent_nm] = d[3]
-                self.eff_samples_usage[agent_nm] = d[4]
-                self.ce_history[agent_nm] = d[5]
-                self.ce_ws[agent_nm] = d[6]
+
                 # update agent
                 self.load_agent(self.agents[agent_nm])
                 self.agents[agent_nm].n_updates = d[1].ag_updates.values[-1] + 1
+
+                # update optimizer
+                filename = f'models/{self.title}_{agent_nm}'
+                self.optimizers[agent_nm] = GCVaR.GCVaR(None, 0)
+                try:
+                    self.optimizers[agent_nm].load(filename)
+                except:
+                    print(f'Missing optimizer file {filename}.opt')
+
+                # update CE sampler
+                self.CEs[agent_nm] = CEM.CEM_Beta_1D(self.kill_prob)
+                hp = self.agents[agent_nm].train_hparams
+                if self.ce_update_freq or (
+                        hp is not None and 'ce_update_freq' in hp and
+                        hp['ce_update_freq'] > 0):
+                    try:
+                        self.CEs[agent_nm].load(filename)
+                    except:
+                        print(f'Missing CE file {filename}.cem')
 
     @staticmethod
     def train_agent_wrapper(q, E, agent_nm, kwargs):
@@ -586,10 +661,6 @@ class Experiment:
                 False,
                 E.dd[(E.dd.agent==agent_nm)&(E.dd.group=='train')],
                 E.valid_scores[agent_nm],
-                E.samples_usage[agent_nm],
-                E.eff_samples_usage[agent_nm],
-                E.ce_history[agent_nm],
-                E.ce_ws[agent_nm],
             )))
             print(f'Error in {agent_nm}.')
             raise
@@ -597,124 +668,31 @@ class Experiment:
             True,
             E.dd[(E.dd.agent == agent_nm) & (E.dd.group == 'train')],
             E.valid_scores[agent_nm],
-            E.samples_usage[agent_nm],
-            E.eff_samples_usage[agent_nm],
-            E.ce_history[agent_nm],
-            E.ce_ws[agent_nm],
         )))
 
-    def train_agent(self, agent_nm, log_freq=None, verbose=1, **kwargs):
-        if log_freq is None: log_freq = self.log_freq
-        t0 = time.time()
-        agent = self.agents[agent_nm]
-        if agent.pretrained_filename is not None:
-            agent.load(agent.pretrained_filename)
-        agent.train()
+    def train_with_dependencies(self, agents_names=None, **kwargs):
+        if agents_names is None: agents_names = self.agents_names.copy()
+        if isinstance(agents_names, str): agents_names = [agents_names]
 
-        lr, weight_decay, optim_freq, episodic_loss, normalize_returns, \
-        T0, Tgamma, cvar, ref_cvar_quantile, gradual_cvar, ce = \
-            self.get_train_hparams(agent)
+        trained_agents = set()
+        while True:
+            curr_agents = [a for a in agents_names if (
+                    self.agents[a].pretrained_filename is None or
+                    self.agents[a].pretrained_filename in trained_agents)]
+            if not curr_agents:
+                break
+            if self.max_distributed:
+                curr_agents = curr_agents[:self.max_distributed]
+            print(f'Training {len(curr_agents)}/{len(agents_names)} '
+                  'remaining agents...')
+            self.train(curr_agents, **kwargs)
+            for a in curr_agents:
+                trained_agents.add(a)
+                agents_names.remove(a)
 
-        valid_fun = (lambda x: np.mean(sorted(x)[:int(np.ceil(cvar*len(x)))])) \
-            if (0<cvar<1) else np.mean
-        running_cvar = self.running_cvar_fun(
-            cvar, gradual_cvar, self.n_train//optim_freq)
-
-        optimizer = self.optimizer_constructor(
-            agent.parameters(), lr=lr, weight_decay=weight_decay)
-        optimizer_wrap = Optim.Optimizer(optimizer, optim_freq, episodic_loss,
-                                         normalize_returns, cvar, running_cvar)
-
-        # get episodes
-        ids = np.arange(len(self.dd))[
-            (self.dd.agent == agent_nm) & (self.dd.group == 'train')]
-
-        self.T = T0
-        self.valid_scores[agent_nm] = [
-            self.test(agent_nm, 'valid', update_inplace=False, temperature=0,
-                      verbose=0)]
-        valid_score = valid_fun(self.valid_scores[agent_nm][-1])
-        valid_mean = np.mean(self.valid_scores[agent_nm][-1])
-        best_valid_score = valid_score
-        best_valid_mean = valid_mean
-        if self.save_best_model:
-            self.save_agent(agent)
-
-        for i, idx in enumerate(ids):
-            # draw episode params
-            w = self.draw_train_episode_params(idx, ce)
-
-            # run episode
-            score, log_prob, ret_loss, n_steps = self.run_episode(
-                idx, agent, update_res=True, temperature=self.T, **kwargs)
-
-            self.ce_update(idx, score, ce, cvar, self.valid_scores[agent_nm][-1])
-
-            # get reference scores for distribution estimation
-            ref_scores = None
-            if ce.valid_ref:
-                if ce.n_source > 1:
-                    ref_scores = optimizer_wrap.curr_scores[:ce.n_source]
-                else:
-                    ref_scores = self.valid_scores[agent_nm][-1]
-            elif ref_cvar_quantile:
-                ref_scores = optimizer_wrap.curr_scores
-
-            # optimize
-            if optimizer_wrap.step(w, log_prob, score, ret_loss, ref_scores):
-                agent.n_updates += 1
-                self.T *= Tgamma
-                # validation
-                if (agent.n_updates % self.valid_freq) == 0:
-                    self.valid_scores[agent_nm].append(
-                        self.test(agent_nm, 'valid', update_inplace=False,
-                                  temperature=0, verbose=0))
-                    valid_score = valid_fun(self.valid_scores[agent_nm][-1])
-                    valid_mean = np.mean(self.valid_scores[agent_nm][-1])
-                    # save model
-                    if best_valid_score < valid_score or \
-                        (best_valid_score == valid_score and
-                         best_valid_mean <= valid_mean):
-                        if self.save_best_model:
-                            self.save_agent(agent)
-                        best_valid_score = valid_score
-                        best_valid_mean = valid_mean
-
-                self.samples_usage[agent_nm] = optimizer_wrap.samples_per_step
-                self.eff_samples_usage[agent_nm] = optimizer_wrap.eff_samples_per_step
-                self.ce_history[agent_nm] = ce.history
-                self.ce_ws[agent_nm] = ce.w_history
-
-                # stop if loss==0 for a while (e.g. all returns are the same...)
-                losses = optimizer_wrap.loss_history
-                if self.zero_loss_tolerance and \
-                        len(losses) > self.zero_loss_tolerance and \
-                        np.all([l==0 for l in losses[-self.zero_loss_tolerance:]]):
-                    if verbose >= 1:
-                        print(f'{agent_nm} training stopped after {i+1} episodes and '
-                              f'{self.zero_loss_tolerance} steps with zero loss.')
-                    break
-
-            # log
-            if log_freq > 0 and ((i + 1) % log_freq) == 0:
-                print(f'\t[{i + 1:03d}/{len(ids):03d}, {agent_nm}] valid_mean='
-                      f'{valid_mean:.1f}\t({time.time() - t0:.0f}s)')
-
-        # load best model
-        if self.save_best_model:
-            self.load_agent(agent)
-        else:
-            self.save_agent(agent)
-
-        if verbose >= 1:
-            print(f'{agent_nm:s} trained ({time.time() - t0:.0f}s).')
-
-    def running_cvar_fun(self, cvar, gradual_cvar, n_iters, switch_time=0.6):
-        if not gradual_cvar:
-            return None
-        if cvar and (0 < cvar < 1) and gradual_cvar:
-            return lambda i: 1-(i/(switch_time*n_iters))*(1-cvar) \
-                if i<switch_time*n_iters else cvar
+        if agents_names:
+            print('Not all agents were reached in the training-dependencies tree!',
+                  agents_names)
 
     ###############   TEST   ###############
 
@@ -802,23 +780,33 @@ class Experiment:
 
     ###############   ANALYSIS   ###############
 
-    def save_results(self, fname=None):
+    def save_results(self, fname=None, agents=False, optimizers=False, CEs=False):
         if fname is None: fname=f'outputs/{self.title}'
         fname += '.pkl'
         with open(fname, 'wb') as h:
-            pkl.dump((self.dd.copy(), self.valid_scores.copy(),
-                      self.samples_usage.copy(), self.eff_samples_usage.copy(),
-                      self.ce_history.copy(), self.ce_ws.copy()), h)
+            pkl.dump((self.dd.copy(), self.valid_scores.copy()), h)
 
-    def load_results(self, fname=None):
+        for anm in self.agents_names:
+            if agents: self.save_agent(anm)
+            if optimizers: self.optimizers[anm].save(f'models/{self.title}_{anm}')
+            if CEs: self.CEs[anm].save(f'models/{self.title}_{anm}')
+
+    def load_results(self, fname=None, agents=False, optimizers=False, CEs=False):
         if fname is None: fname=f'outputs/{self.title}'
         fname += '.pkl'
         with open(fname, 'rb') as h:
-            self.dd, self.valid_scores, self.samples_usage, \
-            self.eff_samples_usage, self.ce_history, self.ce_ws = pkl.load(h)
+            self.dd, self.valid_scores = pkl.load(h)
+
+        for anm in self.agents_names:
+            if agents: self.load_agent(anm)
+            if optimizers: self.optimizers[anm].load(f'models/{self.title}_{anm}')
+            if CEs: self.CEs[anm].load(f'models/{self.title}_{anm}')
 
     def analysis_preprocessing(self, agents=None):
-        train_df = self.dd[self.dd.group == 'train']
+        if agents is None:
+            agents = self.agents_names
+
+        train_df = self.dd[(self.dd.group=='train') & (self.dd.agent.isin(agents))]
         train_df = pd.DataFrame(dict(
             agent=train_df.agent,
             group='train',
@@ -828,7 +816,7 @@ class Experiment:
         ))
 
         valid_df = pd.DataFrame()
-        for agent in self.valid_scores:
+        for agent in agents:
             # valid_scores[agent][iteration][episode]=score
             valid_scores = self.valid_scores[agent]
             valid_df = pd.concat((valid_df, pd.DataFrame(dict(
@@ -844,52 +832,39 @@ class Experiment:
         train_valid_df['agent/group'] = [f'{a}_{g}' for a,g in zip(
             train_valid_df.agent,train_valid_df.group)]
 
-        test_df = self.dd[self.dd.group == 'test']
+        test_df = self.dd[(self.dd.group=='test') & (self.dd.agent.isin(agents))]
 
-        # training samples used per iteration
-        samples_usage = pd.DataFrame()
-        for agent in self.agents_names:
-            if (agents is None or agent in agents) and agent in self.samples_usage:
-                samples_usage = pd.concat((samples_usage, pd.DataFrame(dict(
-                    agent = agent,
-                    train_iteration = np.arange(len(self.samples_usage[agent])),
-                    samples_used = 100*np.array(self.samples_usage[agent]),
-                    effective_samples_used=100*np.array(self.eff_samples_usage[agent]),
-                ))))
+        # optimizer data
+        opt_batch_data, opt_sample_data = pd.DataFrame(), pd.DataFrame()
+        for ag in agents:
+            d1, d2 = self.optimizers[ag].get_data()
+            opt_batch_data = pd.concat((opt_batch_data, d1))
+            opt_sample_data = pd.concat((opt_sample_data, d2))
+        opt_batch_data['agent'] = opt_batch_data.title
+        opt_sample_data['agent'] = opt_sample_data.title
 
-        # sampler weights
-        weights = pd.DataFrame()
-        for agent in self.agents_names:
-            if (agents is None or agent in agents) and agent in self.ce_ws:
-                ws = self.ce_ws[agent]
-                n_iters = len(ws)
-                n_samps = len(ws[0])
-                if n_iters <= 1:
-                    continue
-                ce = self.get_train_hparams(self.agents[agent])[-1]
-                if ce.update_freq > 0:
-                    if ce.n_source > 0:
-                        source_dist = ce.n_source*[True] + (n_samps-ce.n_source)*[False]
-                    else:
-                        source_dist = n_samps*[False]
-                else:
-                    source_dist = n_samps*[True]
-
-                weights = pd.concat((weights, pd.DataFrame(dict(
-                    agent = agent,
-                    train_iteration = np.repeat(np.arange(n_iters), n_samps),
-                    source_distribution = n_iters*list(source_dist),
-                    weight = np.concatenate(ws),
-                ))))
-
-        if agents is not None:
-            train_valid_df = train_valid_df[train_valid_df.agent.isin(agents)]
-            test_df = test_df[test_df.agent.isin(agents)]
+        # CE data
+        ce_batch_data, ce_sample_data = pd.DataFrame(), pd.DataFrame()
+        for ag in agents:
+            ce = self.CEs[ag]
+            if not ce.batch_size:
+                continue
+            d1, d2 = ce.get_data('hit_prob', 'hit_prob')
+            ce_batch_data = pd.concat((ce_batch_data, d1))
+            ce_sample_data = pd.concat((ce_sample_data, d2))
+        if len(ce_batch_data) > 0:
+            ce_batch_data['agent'] = ce_batch_data.title
+            ce_sample_data['agent'] = ce_sample_data.title
+            ce_batch_data.reset_index(drop=True, inplace=True)
+            ce_sample_data.reset_index(drop=True, inplace=True)
 
         train_valid_df.reset_index(drop=True, inplace=True)
         test_df.reset_index(drop=True, inplace=True)
-        samples_usage.reset_index(drop=True, inplace=True)
-        return train_valid_df, test_df, samples_usage, weights
+        opt_batch_data.reset_index(drop=True, inplace=True)
+        opt_sample_data.reset_index(drop=True, inplace=True)
+
+        return train_valid_df, test_df, opt_batch_data, opt_sample_data, \
+               ce_batch_data, ce_sample_data
 
     def build_estimators(self, est_names):
         if isinstance(est_names, dict):
@@ -915,10 +890,10 @@ class Experiment:
 
     def analyze(self, agents=None, W=3, axsize=(6,4), Q=100,
                 train_estimators=('mean','cvar05'), verify_train_success=False):
-        train_estimators = self.build_estimators(train_estimators)
-        train_valid_df, test_df, samples_usage, weights = \
-            self.analysis_preprocessing(agents)
         if agents is None: agents = self.agents_names
+        train_estimators = self.build_estimators(train_estimators)
+        train_valid_df, test_df, opt_batch_data, opt_sample_data, \
+        ce_batch_data, ce_sample_data = self.analysis_preprocessing(agents)
         if verify_train_success:
             agents = [ag for ag in agents if self.last_train_success[ag]]
 
@@ -939,7 +914,7 @@ class Experiment:
         for agent in agents:
             scores = test_df.score[test_df.agent==agent].values
             utils.plot_quantiles(
-                scores, Q=np.arange(Q+1)/100, showmeans=True, ax=axs[a],
+                scores, q=np.arange(Q+1)/100, showmeans=True, ax=axs[a],
                 label=f'{agent} ({np.mean(scores):.1f})')
             print(f'{agent}:\tmean={np.mean(scores):.1f}\t'
                   f'CVaR10={cvar(scores,0.1):.1f}\tCVaR05={cvar(scores,0.05):.1f}')
@@ -948,75 +923,78 @@ class Experiment:
         axs[a].legend(fontsize=13)
         a += 1
 
-        if len(samples_usage) > 0:
-            sns.lineplot(data=samples_usage, x='train_iteration', hue='agent',
-                         y='samples_used', ci=None, ax=axs[a])
+        # Optimizer: sample sizes and weights
+        filter_trivial_agents = False
+        if filter_trivial_agents:
+            keep_agents = [ag for ag in agents if np.any(
+                opt_batch_data.sample_size_perc[opt_batch_data.agent==ag]!=100)]
+            opt_batch_data = opt_batch_data[opt_batch_data.agent.isin(keep_agents)]
+
+        if len(opt_batch_data) > 0:
+            sns.lineplot(data=opt_batch_data, x='batch', hue='agent',
+                         y='sample_size_perc', ci=None, ax=axs[a])
             axs[a].set_xlim((0,None))
             plt.setp(axs[a].get_legend().get_texts(), fontsize='13')
             axs.labs(a, 'train iteration', 'sample size [%]')
             a += 1
 
-            sns.lineplot(data=samples_usage, x='train_iteration', hue='agent',
-                         y='effective_samples_used', ci=None, ax=axs[a])
+            sns.lineplot(data=opt_batch_data, x='batch', hue='agent',
+                         y='eff_sample_size_perc', ci=None, ax=axs[a])
             axs[a].set_xlim((0,None))
             plt.setp(axs[a].get_legend().get_texts(), fontsize='13')
             axs.labs(a, 'train iteration', 'effective sample size [%]')
             a += 1
 
-        if len(weights):
-            iter_resol = 1 + weights.train_iteration.values[-1] // 4
-            weights['iter_rounded'] = [iter_resol*(it//iter_resol) \
-                                       for it in weights.train_iteration]
-            sns.boxplot(data=weights, x='iter_rounded', hue='agent', y='weight',
-                        showmeans=True, ax=axs[a])
+        # CE: weights
+        if len(ce_sample_data) > 0:
+            iter_resol = 1 + ce_sample_data.batch.values[-1] // 4
+            ce_sample_data['iter_rounded'] = [
+                iter_resol*(it//iter_resol) for it in ce_sample_data.batch]
+            sns.boxplot(data=ce_sample_data, x='iter_rounded', hue='agent',
+                        y='weight', showmeans=True, ax=axs[a])
             axs.labs(a, 'train iteration', 'weight')
             axs[a].legend(fontsize=13)
             a += 1
 
-        self.analyze_exposure(agents, axs=axs, a0=a)
+        self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a)
         a += 2
 
-        axs[a].axhline(100*self.dynamics[0], color='k', label='original')
-        for agent in agents:
-            ceh = self.ce_history[agent]
-            y = [100*yy[-1] for yy in ceh['dyn_dists']]
-            if len(y) > 1:
-                axs[a].plot(np.arange(len(y)), y, '.-', label=agent)
-        axs[a].set_ylim((0, 100))
-        axs.labs(a, 'train iteration', 'average kill probability [%]')
-        axs[a].legend(fontsize=13)
-        a += 1
+        if len(ce_batch_data) > 0:
+            axs[a].axhline(100*self.kill_prob, color='k', label='original')
+            for agent in agents:
+                y = 100 * ce_batch_data.hit_prob[ce_batch_data.agent==agent].values
+                if np.any(y!=100*self.kill_prob):
+                    axs[a].plot(np.arange(len(y)), y, '.-', label=agent)
+            axs[a].set_ylim((0, 100))
+            axs.labs(a, 'train iteration', 'average hit probability [%]')
+            axs[a].legend(fontsize=13)
+            a += 1
 
         plt.tight_layout()
         return axs
 
-    def analyze_exposure(self, agents=None, good_threshold=None, axs=None, a0=0):
-        if good_threshold is None: good_threshold = -32*self.maze_mode
+    def analyze_exposure(self, dd, agents=None, good_threshold=None,
+                         axs=None, a0=0):
         if agents is None: agents = self.agents_names
+        dd = dd[dd.agent.isin(agents)]
+
+        if good_threshold is None: good_threshold = -32 * self.maze_mode
+        dd['success'] = 100 * (dd.score > good_threshold)
+        dd['used_success'] = dd.success * dd.selected
+
         if axs is None: axs = utils.Axes(2, 2, (5.5,3.5), fontsize=15)
-        good_episodes = {}
-        for ag in agents:
-            dd = self.dd[(self.dd.group=='train')&(self.dd.agent==ag)]
-            n_samp = (np.array(self.samples_usage[ag]) * self.optim_freq).astype(int)
-            n_iter = min(dd.ag_updates.max() + 1, len(n_samp))
 
-            # total "good" episodes
-            used_scores = [dd[dd.ag_updates==i].score.values for i in range(n_iter)]
-            good_episodes[ag] = [np.sum(np.array(s)>good_threshold) \
-                                 for s in used_scores]
-            axs[a0+0].plot(good_episodes[ag], label=ag)
+        sns.lineplot(data=dd, x='batch', hue='agent', y='success',
+                     ci=None, ax=axs[a0+0])
+        sns.lineplot(data=dd, x='batch', hue='agent', y='used_success',
+                     ci=None, ax=axs[a0+1])
 
-            # "good" episodes exposed to optimizer
-            used_scores = [sorted(dd[dd.ag_updates==i].score.values)[:n_samp[i]] \
-                           for i in range(n_iter)]
-            good_episodes[ag] = [np.sum(np.array(s)>good_threshold) \
-                                 for s in used_scores]
-            axs[a0+1].plot(good_episodes[ag], label=ag)
         axs.labs(a0+0, 'train iteration', 'successful episodes')
         axs.labs(a0+1, 'train iteration', 'successful episodes\nfed to optimizer')
         axs[a0+0].legend(fontsize=13)
         axs[a0+1].legend(fontsize=13)
         plt.tight_layout()
+
         return axs
 
     def show_tests(self, agents=None, n=5, clean_plot=False, **kwargs):
@@ -1058,19 +1036,18 @@ class Experiment:
 
 
 SAMPLE_AGENT_CONFS = dict(
-    Vanilla = (Agents.NN, dict()),
-    CVaR10 = (Agents.NN, dict(train_hparams=dict(cvar=0.1))),
-    CVaR_CE_IS_REF = (Agents.NN, dict(train_hparams=dict(
-        cvar=0.1, ce_update_freq=1, ce_perc=0.2, ce_IS=True,
-        ce_valid_ref=True, ce_source_perc=0.2))),
+    PG = (Agents.FC, dict()),
+    GCVaR = (Agents.FC, dict(train_hparams=dict(cvar=0.05))),
+    CE_SGCVaR = (Agents.FC, dict(train_hparams=dict(
+        cvar=0.05, ce_update_freq=1, soft_cvar=0.6))),
 )
 
 if __name__ == '__main__':
 
     E = Experiment(SAMPLE_AGENT_CONFS, train_episodes=6000,
                    valid_episodes=40, test_episodes=500,
-                   kill_prob=0.05)
+                   optim_freq=400, kill_prob=0.05, title='demo')
     E.main()
     print(E.dd.tail())
-    E.show_tests()
+    E.show_tests(clean_plot=True)
     plt.show()
