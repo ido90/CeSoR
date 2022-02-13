@@ -43,11 +43,12 @@ Written by Ido Greenberg, 2022.
 import numpy as np
 from scipy import stats
 import pandas as pd
+import pickle as pkl
 import warnings
 
 
 class CEM:
-    def __init__(self, dist, batch_size, ref_mode='train', ref_alpha=0.05,
+    def __init__(self, dist, batch_size=0, ref_mode='train', ref_alpha=0.05,
                  n_orig_per_batch=0.2, internal_alpha=0.2, w_clip=5, title='CEM'):
         self.title = title
 
@@ -104,12 +105,12 @@ class CEM:
 
         # Data
         self.sample_dist = []  # n_batches
-        self.sampled_data = [[]]  # n_batches x n_samples_per_batch
-        self.weights = [[]]  # n_batches x n_samples_per_batch
-        self.scores = [[]]  # n_batches x n_samples_per_batch
+        self.sampled_data = [[]]  # n_batches x batch_size
+        self.weights = [[]]  # n_batches x batch_size
+        self.scores = [[]]  # n_batches x batch_size
         self.ref_quantile = []  # n_batches
         self.internal_quantile = []  # n_batches
-        self.selected_samples = [[]]  # n_batches x n_samples_per_batch
+        self.selected_samples = [[]]  # n_batches x batch_size
         self.n_update_samples = []  # n_batches
 
         self.reset()
@@ -128,6 +129,32 @@ class CEM:
         self.internal_quantile = []
         self.selected_samples = [[]]
         self.n_update_samples = []
+
+    def save(self, filename=None):
+        if filename is None: filename = f'models/{self.title}'
+        filename += '.cem'
+        obj = (
+            self.title, self.original_dist, self.batch_size, self.w_clip,
+            self.ref_mode, self.ref_alpha, self.n_orig_per_batch, self.internal_alpha,
+            self.batch_count, self.sample_count, self.update_count, self.ref_scores,
+            self.sample_dist, self.sampled_data, self.weights, self.scores,
+            self.ref_quantile, self.internal_quantile, self.selected_samples,
+            self.n_update_samples
+        )
+        with open(filename, 'wb') as h:
+            pkl.dump(obj, h)
+
+    def load(self, filename=None):
+        if filename is None: filename = f'models/{self.title}'
+        filename += '.cem'
+        with open(filename, 'rb') as h:
+            obj = pkl.load(h)
+        self.title, self.original_dist, self.batch_size, self.w_clip, \
+        self.ref_mode, self.ref_alpha, self.n_orig_per_batch, self.internal_alpha, \
+        self.batch_count, self.sample_count, self.update_count, self.ref_scores, \
+        self.sample_dist, self.sampled_data, self.weights, self.scores, \
+        self.ref_quantile, self.internal_quantile, self.selected_samples, \
+        self.n_update_samples = obj
 
     def is_original_dist(self):
         return self.sample_count < self.n_orig_per_batch
@@ -173,7 +200,7 @@ class CEM:
 
     ########   Update-related methods   ########
 
-    def update(self, score):
+    def update(self, score, save=True):
         self.scores[-1].append(score)
         self.update_count += 1
 
@@ -188,12 +215,18 @@ class CEM:
             dist = self.update_sample_distribution(samples, weights)
             self.sample_dist.append(dist)
 
-            self.sampled_data.append([])
-            self.scores.append([])
-            self.weights.append([])
-            self.batch_count += 1
-            self.sample_count = 0
-            self.update_count = 0
+            self.reset_batch()
+            if save:
+                filename = save if isinstance(save, str) else None
+                self.save(filename)
+
+    def reset_batch(self):
+        self.sampled_data.append([])
+        self.scores.append([])
+        self.weights.append([])
+        self.batch_count += 1
+        self.sample_count = 0
+        self.update_count = 0
 
     def select_samples(self):
         # Get internal quantile
@@ -234,15 +267,11 @@ class CEM:
 
     ########   Analysis-related methods   ########
 
-        # self.sampled_data = [[]]  # n_batches x n_samples_per_batch
-        # self.weights = [[]]  # n_batches x n_samples_per_batch
-        # self.scores = [[]]  # n_batches x n_samples_per_batch
-        # self.selected_samples = [[]]  # n_batches x n_samples_per_batch
-
     def get_data(self, dist_obj_titles=None, sample_dimension_titles=None,
                  exclude_last_batch=True):
         n_batches = self.batch_count + 1 - bool(exclude_last_batch)
         bs = self.batch_size
+        if bs == 0: bs = self.sample_count
 
         # Batch-level data
         # Create a map from table-titles to distribution parameters.
