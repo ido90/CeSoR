@@ -463,7 +463,7 @@ class Experiment:
         # prepare optimizer
         valid_fun = (lambda x: np.mean(sorted(x)[:int(np.ceil(cvar*len(x)))])) \
             if (0<cvar<1) else np.mean
-        cvar_scheduler = GCVaR.alpha_scheduler(soft_cvar, self.n_train)
+        cvar_scheduler = (soft_cvar, self.n_train)
         optimizer = self.optimizer_constructor(
             agent.parameters(), lr=lr, weight_decay=weight_decay)
         optimizer_wrap = GCVaR.GCVaR(
@@ -991,8 +991,8 @@ class Experiment:
 
         axs.labs(a0+0, 'train iteration', 'successful episodes')
         axs.labs(a0+1, 'train iteration', 'successful episodes\nfed to optimizer')
-        axs[a0+0].legend(fontsize=13)
-        axs[a0+1].legend(fontsize=13)
+        plt.setp(axs[a0+0].get_legend().get_texts(), fontsize='13')
+        plt.setp(axs[a0+1].get_legend().get_texts(), fontsize='13')
         plt.tight_layout()
 
         return axs

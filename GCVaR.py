@@ -8,17 +8,18 @@ import utils
 
 class GCVaR:
     def __init__(self, optimizer, batch_size, alpha=1, scheduler=None,
-                 alpha1_normalizer=None, title='GCVaR', check_nans=True):
+                 alpha1_normalizer=np.mean, title='GCVaR', check_nans=True):
         # Configuration
         self.title = title
         self.o = optimizer  # torch optimizer
         self.batch_size = batch_size
         self.alpha = alpha  # target risk level
-        if scheduler is None: scheduler = alpha_scheduler()
-        self.alpha_scheduler = scheduler  # curr_alpha=scheduler(iter, target_alpha)
-        if alpha1_normalizer is None:
-            alpha1_normalizer = lambda R, w: np.sum(R*w) / np.sum(w)
-        self.alpha1_normalizer = alpha1_normalizer  # scores normalizer for alpha=1
+        # scheduler should be one of the following:
+        #  None; callable(iter, alpha); or tuple (soft_cvar, n_iterations).
+        self.alpha_scheduler = scheduler
+        # scores normalizer for alpha=1 (since alpha=1 is not CVaR,
+        #  we don't have to use q_alpha anymore).
+        self.alpha1_normalizer = alpha1_normalizer
         self.check_nans = check_nans
 
         # State
@@ -84,6 +85,16 @@ class GCVaR:
         self.scores.append([])
         self.weights.append([])
 
+    def get_alpha(self):
+        if self.alpha_scheduler is None:
+            return self.alpha
+        if isinstance(self.alpha_scheduler, (list, tuple)):
+            return alpha_scheduler(
+                self.batch_count, self.alpha, *self.alpha_scheduler)
+        if callable(self.alpha_scheduler):
+            return self.alpha_scheduler(self.batch_count, self.alpha)
+        raise IOError(self.alpha_scheduler)
+
     def step(self, weight, log_prob, score, ref_scores=None, save=True):
         # update metrics
         self.weights[-1].append(weight)      # np
@@ -105,13 +116,13 @@ class GCVaR:
 
     def select_samples(self, ref_scores=None):
         # get alpha
-        alpha = self.alpha_scheduler(self.batch_count, self.alpha)
+        alpha = self.get_alpha()
 
         # get q_alpha
         self.weights[-1] = np.array(self.weights[-1], dtype=np.float32)
         self.scores[-1] = np.array(self.scores[-1], dtype=np.float32)
         if alpha == 1:
-            q = self.alpha1_normalizer(self.scores[-1], self.weights[-1])
+            q = self.alpha1_normalizer(self.scores[-1])
         else:
             w = None
             if ref_scores is None:
@@ -190,12 +201,9 @@ class GCVaR:
         return d1, d2
 
 
-def alpha_scheduler(soft_cvar=0, n_iters=1):
+def alpha_scheduler(iter, alpha, soft_cvar=0, n_iters=1):
     if soft_cvar:
-        def linear_scheduler(i, alpha):
-            if i < soft_cvar * n_iters:
-                return 1 - (i/(soft_cvar*n_iters)) * (1-alpha)
-            return alpha
-        return linear_scheduler
-
-    return lambda i, alpha: alpha
+        if iter < soft_cvar * n_iters:
+            return 1 - (iter/(soft_cvar*n_iters)) * (1-alpha)
+        return alpha
+    return alpha
