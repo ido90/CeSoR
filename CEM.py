@@ -49,7 +49,8 @@ import warnings
 
 class CEM:
     def __init__(self, dist, batch_size=0, ref_mode='train', ref_alpha=0.05,
-                 n_orig_per_batch=0.2, internal_alpha=0.2, w_clip=5, title='CEM'):
+                 n_orig_per_batch=0.2, internal_alpha=0.2, force_min_samples=True,
+                 w_clip=5, title='CEM'):
         self.title = title
 
         # An object defining the original distribution to sample from.
@@ -96,6 +97,11 @@ class CEM:
         self.internal_alpha = internal_alpha
         if active_train_mode:
             self.internal_alpha *= 1 - self.n_orig_per_batch / self.batch_size
+        # If multiple scores R equal the alpha quantile q, then the selected
+        #  R<q samples may be strictly fewer than internal_alpha*batch_size.
+        #  If force_min_samples==True, we fill in the missing entries from
+        #  samples with R==q.
+        self.force_min_samples = force_min_samples
 
         # State
         self.batch_count = 0
@@ -257,7 +263,14 @@ class CEM:
         q = max(q_int, q_ref)
 
         # Select samples
-        selection = np.array(self.scores[-1]) < q
+        R = np.array(self.scores[-1])
+        selection = R < q
+        if self.force_min_samples:
+            missing_samples = int(self.internal_alpha*self.batch_size - np.sum(selection))
+            if missing_samples > 0:
+                equals = np.where(R == q)[0]
+                samples_to_add = equals[:missing_samples]
+                selection[samples_to_add] = True
         self.selected_samples.append(selection)
         self.n_update_samples.append(int(np.sum(selection)))
 

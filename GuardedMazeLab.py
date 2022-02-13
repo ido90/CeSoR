@@ -1024,7 +1024,7 @@ class Experiment:
             for i in range(n):
                 s, T = self.show_episode((agent, 'test', episodes[i]), ax=axs[a],
                                          verbose=0, **kwargs)
-                if clean_plot:
+                if clean_plot or scores[i]==s:
                     axs.labs(a, None, None, f'{agent}: score={scores[i]:.0f}')
                     axs[a].axis('off')
                 else:
