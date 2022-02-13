@@ -1,3 +1,11 @@
+'''
+The Guarded Maze: a gym environment of a maze with the shortest path being guarded,
+leading to a large negative reward with small probability whenever this path is used.
+
+The code is based on the FourRooms environment by Stav Belogolovsky.
+Modified by Ido Greenberg, 2022.
+'''
+
 import numpy as np
 import pandas as pd
 from gym import core, spaces
@@ -7,16 +15,15 @@ import utils
 import warnings
 warnings.filterwarnings("ignore", message="numpy.dtype size changed")
 warnings.filterwarnings("ignore", message="numpy.ufunc size changed")
-warnings.filterwarnings("ignore", message="precision lowered by casting")
 
 MAZE_SIZE = {1:8, 2:16}
 MAX_STEPS = {1:10, 2:60}
 
-class RoomsEnv(core.Env):
+class GuardedMaze(core.Env):
     metadata = {'render.modes': ['human']}
 
     def __init__(self, mode=1, rows=None, cols=None, action_noise=0.2, max_steps=None,
-                 seed=None, kill_prob=0,
+                 seed=None, kill_prob=0.05,
                  goal_in_state=True, detailed_r=False, force_motion=False, collect=False,
                  fixed_reset=False, init_state=None, goal_state=None, continuous=True):
         self.mode = mode

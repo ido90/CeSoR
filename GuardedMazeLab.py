@@ -13,7 +13,7 @@ import torch
 import torch.optim as optim
 import gym
 
-import rooms
+import GuardedMaze
 import Agents, GCVaR, CEM
 import utils
 
@@ -44,7 +44,7 @@ class Experiment:
         self.n_valid = valid_episodes
         self.n_test = test_episodes
         self.maze_mode = maze_mode
-        if maze_size is None: maze_size = rooms.MAZE_SIZE[self.maze_mode]
+        if maze_size is None: maze_size = GuardedMaze.MAZE_SIZE[self.maze_mode]
         self.maze_size = maze_size
         self.max_episode_steps = max_episode_steps
         self.state_mode = state_mode
@@ -103,11 +103,11 @@ class Experiment:
 
     def register_env(self):
         # first unregister if needed
-        if 'RoomsEnv-v0' in gym.envs.registry.env_specs:
-            del gym.envs.registry.env_specs['RoomsEnv-v0']
+        if 'GuardedMazeEnv-v0' in gym.envs.registry.env_specs:
+            del gym.envs.registry.env_specs['GuardedMazeEnv-v0']
         gym.envs.registration.register(
-            id='RoomsEnv-v0',
-            entry_point='rooms:RoomsEnv',
+            id='GuardedMazeEnv-v0',
+            entry_point='GuardedMaze:GuardedMaze',
             kwargs=dict(
                 mode=self.maze_mode, kill_prob=self.kill_prob,
                 action_noise=self.action_noise,
@@ -117,7 +117,7 @@ class Experiment:
 
     def make_env(self):
         self.register_env()
-        self.env = gym.make('RoomsEnv-v0')
+        self.env = gym.make('GuardedMazeEnv-v0')
 
     def init_dd(self, n=1, agent='', group='', episode0=0, ag_updates=-1, ag_hash='',
                 temperature=0, inplace=True, reset=False, update_map=True):
