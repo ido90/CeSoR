@@ -86,7 +86,6 @@ class Experiment:
         self.valid_scores = {}
 
         self.CEs = {}
-        if ce_ref_alpha is None: ce_ref_alpha = self.cvar
         if ce_n_orig is None:
             ce_n_orig = int(0.2*self.optim_freq) if ce_ref_mode=='train' else 0
         self.ce_update_freq = use_ce
@@ -485,6 +484,7 @@ class Experiment:
         internal_alpha = get_value('ce_internal_alpha')
 
         # prepare CE
+        if ref_alpha is None: ref_alpha = cvar
         ce = CEM.CEM_Beta_1D(
             self.kill_prob, batch_size=update_freq * self.optim_freq,
             ref_mode=ref_mode, ref_alpha=ref_alpha, w_clip=w_clip,
