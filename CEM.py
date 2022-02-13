@@ -212,7 +212,10 @@ class CEM:
             weights = [self.weights[-1][i] for i in range(self.sample_count)
                        if self.selected_samples[-1][i]]
 
-            dist = self.update_sample_distribution(samples, weights)
+            if len(samples) > 0:
+                dist = self.update_sample_distribution(samples, weights)
+            else:
+                dist = self.sample_dist[-1]
             self.sample_dist.append(dist)
 
             self.reset_batch()
@@ -254,7 +257,7 @@ class CEM:
         q = max(q_int, q_ref)
 
         # Select samples
-        selection = np.array(self.scores[-1]) <= q
+        selection = np.array(self.scores[-1]) < q
         self.selected_samples.append(selection)
         self.n_update_samples.append(int(np.sum(selection)))
 
