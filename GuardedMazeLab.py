@@ -468,7 +468,7 @@ class Experiment:
         # prepare optimizer
         valid_fun = (lambda x: np.mean(sorted(x)[:int(np.ceil(cvar*len(x)))])) \
             if (0<cvar<1) else np.mean
-        cvar_scheduler = (soft_cvar, self.n_train)
+        cvar_scheduler = (soft_cvar, self.n_train//self.optim_freq)
         optimizer = self.optimizer_constructor(
             agent.parameters(), lr=lr, weight_decay=weight_decay)
         optimizer_wrap = GCVaR.GCVaR(
