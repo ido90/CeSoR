@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
-import time
+import time, warnings
 import pickle as pkl
 import multiprocessing as mp
 import torch
@@ -447,10 +447,16 @@ class Experiment:
         return w
 
     def prepare_training(self, agent=None):
+        hparam_keys = {}
+        if agent.train_hparams is not None:
+            hparam_keys = set(agent.train_hparams.keys())
+        def get_value(x):
+            if x in hparam_keys:
+                hparam_keys.remove(x)
+                return agent.train_hparams[x]
+            return getattr(self, x)
+
         # get optimization hparams
-        get_value = lambda x: agent.train_hparams[x] \
-            if agent.train_hparams is not None and x in agent.train_hparams \
-            else getattr(self, x)
         lr = get_value('lr')
         weight_decay = get_value('weight_decay')
         optim_freq = get_value('optim_freq')
@@ -486,6 +492,8 @@ class Experiment:
             title=agent.title)
         self.CEs[agent.title] = ce
 
+        if len(hparam_keys) > 0:
+            warnings.warn(f'Unused hyper-params for {agent.title}: {hparam_keys}')
         return optimizer_wrap, valid_fun, optim_q_ref, T0, Tgamma, \
                ref_mode=='valid', ce
 
