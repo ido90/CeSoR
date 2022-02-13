@@ -186,7 +186,7 @@ def compare_with_ref(dd, y, x, ref=None, x_ord=None, hue=None, sort_hue=True, ax
         ax.set_xticklabels(ax.get_xticklabels(), rotation=25)
 
 def qgroups(x, nbins=5, apply_labs=True):
-    qs, _ = get_quantiles(x, nbins)
+    qs, _ = quantile(x, nbins)
     qs = np.array(qs)
     qs[-1] += 1
     g = [int(np.sum(xx>=qs))-1 for xx in x]
