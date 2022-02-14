@@ -269,7 +269,7 @@ class CEM:
             missing_samples = int(self.internal_alpha*self.batch_size - np.sum(selection))
             if missing_samples > 0:
                 equals = np.where(R == q)[0]
-                samples_to_add = equals[:missing_samples]
+                samples_to_add = np.random.choice(equals, missing_samples, replace=False)
                 selection[samples_to_add] = True
         self.selected_samples.append(selection)
         self.n_update_samples.append(int(np.sum(selection)))
