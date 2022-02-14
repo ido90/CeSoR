@@ -245,13 +245,14 @@ class CEM:
         q_ref = -np.inf
         if self.ref_mode == 'train':
             q_ref = quantile(self.scores[-1][:self.n_orig_per_batch],
-                             self.ref_alpha)
+                             self.ref_alpha, estimate_underlying_quantile=True)
         elif self.ref_mode == 'valid':
             if self.ref_scores is None:
                 warnings.warn('ref_mode=valid, but no '
                               'validation scores were provided.')
             else:
-                q_ref = quantile(self.ref_scores, 100*self.ref_alpha)
+                q_ref = quantile(self.ref_scores, 100*self.ref_alpha,
+                                 estimate_underlying_quantile=True)
         elif self.ref_mode == 'none':
             q_ref = -np.inf
         else:
@@ -336,9 +337,18 @@ class CEM:
         return d1, d2
 
 
-def quantile(x, q, w=None, is_sorted=False):
+def quantile(x, q, w=None, is_sorted=False, estimate_underlying_quantile=False):
+    n = len(x)
+    # If we estimate_underlying_quantile, we refer to min(x),max(x) not as
+    #  quantiles 0,1, but rather as quantiles 1/(n+1),n/(n+1) of the
+    #  underlying distribution from which x is sampled.
+    if estimate_underlying_quantile and n > 1:
+        q = q * (n+1)/(n-1) - 1/(n-1)
+        q = np.clip(q, 0, 1)
+    # Unweighted quantiles
     if w is None:
         return np.percentile(x, 100*q)
+    # Weighted quantiles
     x = np.array(x)
     w = np.array(w)
     if not is_sorted:

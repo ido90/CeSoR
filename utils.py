@@ -15,9 +15,21 @@ import torch
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-def quantile(x, q, w=None, is_sorted=False):
+def quantile(x, q, w=None, is_sorted=False, estimate_underlying_quantile=False):
+    n = len(x)
+
+    # If we estimate_underlying_quantile, we refer to min(x),max(x) not as
+    #  quantiles 0,1, but rather as quantiles 1/(n+1),n/(n+1) of the
+    #  underlying distribution from which x is sampled.
+    if estimate_underlying_quantile and n > 1:
+        q = q * (n+1)/(n-1) - 1/(n-1)
+        q = np.clip(q, 0, 1)
+
+    # Unweighted quantiles
     if w is None:
         return np.percentile(x, 100*q)
+
+    # Weighted quantiles
     x = np.array(x)
     w = np.array(w)
     if not is_sorted:

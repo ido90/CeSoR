@@ -128,7 +128,8 @@ class GCVaR:
             if ref_scores is None:
                 ref_scores = self.scores[-1]
                 w = self.weights[-1]
-            q = utils.quantile(ref_scores, alpha, w)
+            q = utils.quantile(ref_scores, alpha, w,
+                               estimate_underlying_quantile=True)
 
         # get selected episodes for optimization
         selected = (self.scores[-1] < q) if alpha<1 else \
