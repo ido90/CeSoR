@@ -85,7 +85,7 @@ class GuardedMaze(core.Env):
 
         self.curr_guard = None
         self.curr_cost = None
-        self.killed = False
+        self.spotted = False
         self.nsteps = 0
         self.is_long_path = 0
         self.tot_reward = 0
@@ -104,15 +104,15 @@ class GuardedMaze(core.Env):
             return self.state_xy
         return self._im_from_state()
 
-    def reset(self, guard=None, kill_cost=None, init_state=None):
+    def reset(self, guard=None, guard_cost=None, init_state=None):
         if guard is None:
             guard = self.rng.random() < self.guard_prob
-        if kill_cost is None:
+        if guard_cost is None:
             # TODO lognormal
-            kill_cost = self.rng.exponential(self.guard_cost) \
+            guard_cost = self.rng.exponential(self.guard_cost) \
                 if self.rand_cost else self.guard_cost
         self.curr_guard = guard
-        self.curr_cost = kill_cost
+        self.curr_cost = guard_cost
 
         if self.fixed_reset:
             self.state_cell, self.state = self.reset_state_cell, self.reset_state
@@ -124,7 +124,7 @@ class GuardedMaze(core.Env):
         self.nsteps = 0
         self.tot_reward = 0
         self.is_long_path = 0
-        self.killed = False
+        self.spotted = False
         if self.collect:
             self.episode_count += 1
             self._nep.append(self.episode_count)
@@ -176,7 +176,7 @@ class GuardedMaze(core.Env):
         if self.force_motion and not moved:
             r -= 1
 
-        if not self.killed:
+        if not self.spotted:
             kz = max(self.is_kill_zone(), self.is_kill_zone(mid_cell))
             if kz == 1:
                 self.is_long_path = -1
@@ -184,7 +184,7 @@ class GuardedMaze(core.Env):
                 if (self.rand_guard and self.rng.random()<self.curr_guard) or \
                         ((not self.rand_guard) and self.curr_guard):
                     r -= self.curr_cost * kz * self.L
-                    self.killed = True
+                    self.spotted = True
 
         return r
 
@@ -335,19 +335,18 @@ class GuardedMaze(core.Env):
                 map[3*W//4-1:3*W//4, 1:H//4] = -1
             elif self.mode == 2:
                 map[3*W//4-1:3*W//4+1, 1:H//4] = -1
-            map[-2, H//2] = -0.1
 
         return map
 
     def render(self, mode='human', close=False):
         return 0
 
-def _evaluate_strategies(n=8, max_cost=2, goal_val=1, kill_prob=0.05, kill_cost=4,
+def _evaluate_strategies(n=8, max_cost=2, goal_val=1, guard_prob=0.05, guard_cost=4,
                          short_dist=1):
     axs = utils.Axes(2, 2)
 
-    kp = np.arange(0,1.01,0.01) # kill probabilities
-    kc = stats.expon.ppf(np.arange(0,1,0.01), kill_cost) # kill costs
+    kp = np.arange(0,1.01,0.01) # guard probabilities
+    kc = stats.expon.ppf(np.arange(0,1,0.01), guard_cost) # guard costs
     L = 2 * n # going from one end to the other
     max_cost *= L
     goal_val *= L
@@ -359,9 +358,9 @@ def _evaluate_strategies(n=8, max_cost=2, goal_val=1, kill_prob=0.05, kill_cost=
         long = (4-short_dist)*(n-2)*1 - goal_val + 0*k # long way to the goal
         # short (and risky) way
         if a == 0:
-            greed = short_dist*(n-2)*1 - goal_val + L*kill_cost*k
+            greed = short_dist*(n-2)*1 - goal_val + L*guard_cost*k
         else:
-            greed = short_dist*(n-2)*1 - goal_val + L*k*kill_prob
+            greed = short_dist*(n-2)*1 - goal_val + L*k*guard_prob
 
         ax = axs[a]
         ax.plot(k, stay, label='stay')
@@ -370,7 +369,7 @@ def _evaluate_strategies(n=8, max_cost=2, goal_val=1, kill_prob=0.05, kill_cost=
         ax.plot(k, greed, label='greedy')
         ax.legend()
 
-    axs.labs(0, 'guard prob', f'E[loss | cost={kill_cost}]')
-    axs.labs(1, 'guard cost', f'E[loss | prob={kill_prob}]')
+    axs.labs(0, 'guard prob', f'E[loss | cost={guard_cost}]')
+    axs.labs(1, 'guard cost', f'E[loss | prob={guard_prob}]')
 
     return axs
