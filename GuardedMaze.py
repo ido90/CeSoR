@@ -7,6 +7,7 @@ Modified by Ido Greenberg, 2022.
 '''
 
 import numpy as np
+from scipy import stats
 import pandas as pd
 from gym import core, spaces
 from gym.utils import seeding
@@ -23,8 +24,8 @@ class GuardedMaze(core.Env):
     metadata = {'render.modes': ['human']}
 
     def __init__(self, mode=1, rows=None, cols=None, action_noise=0.2, max_steps=None,
-                 seed=None, kill_prob=0.05,
-                 goal_in_state=True, detailed_r=False, force_motion=False, collect=False,
+                 gurad_prob=0.05, guard_cost=4, rand_prob=False, rand_cost=False,
+                 seed=None, detailed_r=False, force_motion=False, collect=False,
                  fixed_reset=False, init_state=None, goal_state=None, continuous=True):
         self.mode = mode
         if rows is None: rows = MAZE_SIZE[self.mode]
@@ -34,7 +35,11 @@ class GuardedMaze(core.Env):
         if goal_state is None: goal_state = (-2,rows//3)
         self.rng = np.random.RandomState(seed)
         self.continuous = continuous
-        self.kill_prob = kill_prob
+
+        self.guard_prob = gurad_prob
+        self.guard_cost = guard_cost
+        self.rand_guard = rand_prob
+        self.rand_cost = rand_cost
         self.detailed_r = detailed_r
         self.rows, self.cols = rows, cols
         self.L = 2 * self.rows
@@ -43,7 +48,7 @@ class GuardedMaze(core.Env):
         self.max_steps = max_steps
         self.force_motion = force_motion
 
-        n_channels = 2 + goal_in_state
+        n_channels = 3
         self.action_space = spaces.Discrete(4)
         if self.continuous:
             # self.observation_space = spaces.Tuple((
@@ -60,7 +65,6 @@ class GuardedMaze(core.Env):
         self.directions = [np.array((-1, 0)), np.array((1, 0)),
                            np.array((0, -1)), np.array((0, 1))]  # l, r, d, u
 
-        self.goal_in_state = goal_in_state
         self.action_noise = action_noise
 
         self.map = self._randomize_walls()
@@ -79,7 +83,11 @@ class GuardedMaze(core.Env):
         else:
             self.reset_state_cell, self.reset_state = None, None
 
+        self.curr_guard = None
+        self.curr_cost = None
         self.killed = False
+        self.nsteps = 0
+        self.is_long_path = 0
         self.tot_reward = 0
         self.episode_count = 0
         self._nep, self._states, self._actions, self._rewards, self._terminals = \
@@ -96,9 +104,16 @@ class GuardedMaze(core.Env):
             return self.state_xy
         return self._im_from_state()
 
-    def reset(self, kill_prob=None, init_state=None):
-        if kill_prob is not None:
-            self.kill_prob = kill_prob
+    def reset(self, guard=None, kill_cost=None, init_state=None):
+        if guard is None:
+            guard = self.rng.random() < self.guard_prob
+        if kill_cost is None:
+            # TODO lognormal
+            kill_cost = self.rng.exponential(self.guard_cost) \
+                if self.rand_cost else self.guard_cost
+        self.curr_guard = guard
+        self.curr_cost = kill_cost
+
         if self.fixed_reset:
             self.state_cell, self.state = self.reset_state_cell, self.reset_state
             self.state_xy = self.state_cell.copy()
@@ -108,6 +123,7 @@ class GuardedMaze(core.Env):
         self.state_traj = [np.reshape(self.state_xy,(1,self.state_xy.size))]
         self.nsteps = 0
         self.tot_reward = 0
+        self.is_long_path = 0
         self.killed = False
         if self.collect:
             self.episode_count += 1
@@ -117,7 +133,7 @@ class GuardedMaze(core.Env):
             self._states.append(np.reshape(self.state_cell,(1,self.state_cell.size)))
 
         obs = self.get_obs()
-        return self.kill_prob, obs
+        return (self.curr_guard, self.curr_cost), obs
 
     def collect_on(self):
         self._states = []
@@ -160,10 +176,14 @@ class GuardedMaze(core.Env):
         if self.force_motion and not moved:
             r -= 1
 
-        if self.kill_prob and not self.killed:
-            if self.is_kill_zone() or self.is_kill_zone(mid_cell):
-                if self.rng.random() < self.kill_prob:
-                    r -= 4*self.L
+        if not self.killed:
+            kz = max(self.is_kill_zone(), self.is_kill_zone(mid_cell))
+            if kz == 1:
+                self.is_long_path = -1
+            if kz:
+                if (self.rand_guard and self.rng.random()<self.curr_guard) or \
+                        ((not self.rand_guard) and self.curr_guard):
+                    r -= self.curr_cost * kz * self.L
                     self.killed = True
 
         return r
@@ -187,10 +207,9 @@ class GuardedMaze(core.Env):
             self.state[self.state_cell[0], self.state_cell[1]] = 1
 
         self.state_traj.append(np.reshape(self.state_xy,(1,self.state_xy.size)))
-        if self.goal_in_state:
-            done = self.goal[self.state_cell[0], self.state_cell[1]]
-        else:
-            done = np.all(self.state_cell == self.goal_cell)
+        done = self.goal[self.state_cell[0], self.state_cell[1]]
+        if done and self.is_long_path>=0:
+            self.is_long_path = 1
 
         obs = self.get_obs()
         r = self.get_reward(done, moved, mid_cell)
@@ -209,10 +228,11 @@ class GuardedMaze(core.Env):
 
         self.tot_reward += r
         self.nsteps += 1
-        info = dict()
+        info = {'path': self.is_long_path}
 
         if done:
-            info = {'r': self.tot_reward, 'l': self.nsteps}
+            info = {'r': self.tot_reward, 'l': self.nsteps,
+                    'path': self.is_long_path}
 
         return obs, r, done, info
 
@@ -250,9 +270,7 @@ class GuardedMaze(core.Env):
         im_list = [m]
 
         # goal
-        goal = self.goal if self.goal_in_state else np.zeros(m.shape)
-        if self.goal_in_state or for_plot:
-            im_list.append(goal)
+        im_list.append(self.goal)
 
         # state (agent)
         im_list.append(self.state)
@@ -287,7 +305,10 @@ class GuardedMaze(core.Env):
     def is_kill_zone(self, cell=None):
         if cell is None:
             cell = self.state_cell
-        return self.map[cell[0], cell[1]] == -1
+        k = self.map[cell[0], cell[1]]
+        if k < 0:
+            return -k
+        return 0
 
     def _randomize_walls(self):
         W = self.cols
@@ -309,36 +330,47 @@ class GuardedMaze(core.Env):
             map[3*W//4-1 : 3*W//4+1, H//4 : 3*H//4] = 1  # ver, center
 
         # kill zone
-        if self.kill_prob:
+        if self.guard_prob:
             if self.mode == 1:
                 map[3*W//4-1:3*W//4, 1:H//4] = -1
             elif self.mode == 2:
                 map[3*W//4-1:3*W//4+1, 1:H//4] = -1
+            map[-2, H//2] = -0.1
 
         return map
 
     def render(self, mode='human', close=False):
         return 0
 
-def _evaluate_strategies(n=8, max_cost=2, goal_val=1, kill_cost=4,
+def _evaluate_strategies(n=8, max_cost=2, goal_val=1, kill_prob=0.05, kill_cost=4,
                          short_dist=1):
-    pk = np.arange(0,1.01,0.01) # kill probabilities
+    axs = utils.Axes(2, 2)
+
+    kp = np.arange(0,1.01,0.01) # kill probabilities
+    kc = stats.expon.ppf(np.arange(0,1,0.01), kill_cost) # kill costs
     L = 2 * n # going from one end to the other
     max_cost *= L
     goal_val *= L
 
-    # costs of different strategies
-    stay = max_cost + 0*pk # staying out of trouble
-    late_reach = max_cost -goal_val + 0*pk # random walk to the goal
-    long = (4-short_dist)*(n-2)*1 - goal_val + 0*pk # long way to the goal
-    greed = short_dist*(n-2)*1 - goal_val + kill_cost*L*pk # short (and risky) way
+    for a, k in enumerate((kp,kc)):
+        # costs of different strategies
+        stay = max_cost + 0*k # staying out of trouble
+        late_reach = max_cost -goal_val + 0*k # random walk to the goal
+        long = (4-short_dist)*(n-2)*1 - goal_val + 0*k # long way to the goal
+        # short (and risky) way
+        if a == 0:
+            greed = short_dist*(n-2)*1 - goal_val + L*kill_cost*k
+        else:
+            greed = short_dist*(n-2)*1 - goal_val + L*k*kill_prob
 
-    axs = utils.Axes(1, 1)
-    ax = axs[0]
-    ax.plot(pk, stay, label='stay')
-    ax.plot(pk, late_reach, label='late long')
-    ax.plot(pk, long, label='long')
-    ax.plot(pk, greed, label='greedy')
-    ax.legend()
-    axs.labs(0, 'p_kill', 'E[loss]')
-    return ax
+        ax = axs[a]
+        ax.plot(k, stay, label='stay')
+        ax.plot(k, late_reach, label='late long')
+        ax.plot(k, long, label='long')
+        ax.plot(k, greed, label='greedy')
+        ax.legend()
+
+    axs.labs(0, 'guard prob', f'E[loss | cost={kill_cost}]')
+    axs.labs(1, 'guard cost', f'E[loss | prob={kill_prob}]')
+
+    return axs
