@@ -52,6 +52,8 @@ class CEM:
                  n_orig_per_batch=0.2, internal_alpha=0.2, force_min_samples=True,
                  w_clip=5, title='CEM'):
         self.title = title
+        self.default_dist_titles = None
+        self.default_samp_titles = None
 
         # An object defining the original distribution to sample from.
         # This can be any object (e.g., list of distribution parameters),
@@ -85,6 +87,10 @@ class CEM:
         self.n_orig_per_batch = n_orig_per_batch
         if 0<self.n_orig_per_batch<1:
             self.n_orig_per_batch = int(self.n_orig_per_batch*self.batch_size)
+        if self.batch_size < self.n_orig_per_batch:
+            warnings.warn(f'samples per batch = {self.batch_size} < '
+                          f'{self.n_orig_per_batch} = original-dist samples per batch')
+            self.n_orig_per_batch = self.batch_size
 
         active_train_mode = self.ref_mode == 'train' and self.batch_size
         if active_train_mode and self.n_orig_per_batch < 1:
@@ -286,6 +292,10 @@ class CEM:
 
     def get_data(self, dist_obj_titles=None, sample_dimension_titles=None,
                  exclude_last_batch=True):
+        if dist_obj_titles is None:
+            dist_obj_titles = self.default_dist_titles
+        if sample_dimension_titles is None:
+            sample_dimension_titles = self.default_samp_titles
         n_batches = self.batch_count + 1 - bool(exclude_last_batch)
         bs = self.batch_size
         if bs == 0: bs = self.sample_count
@@ -318,17 +328,22 @@ class CEM:
         if isinstance(sample_dimension_titles, str):
             samples = {sample_dimension_titles:np.concatenate(self.sampled_data)}
         elif isinstance(sample_dimension_titles, (tuple, list)):
-            samples = {t:[sample[i] for batch in self.sampled_data
+            sampled_data = self.sampled_data[:-1] if exclude_last_batch \
+                else self.sampled_data
+            samples = {t:[sample[i] for batch in sampled_data
                           for sample in batch]
                          for i,t in enumerate(sample_dimension_titles)}
 
+        w, s = self.weights, self.scores
+        if n_batches and exclude_last_batch:
+            w, s = self.weights[:-1], self.scores[:-1]
         d2_dict = dict(
             title=self.title,
             batch=np.repeat(np.arange(n_batches), bs),
             sample_id=n_batches*list(range(bs)),
             selected=np.concatenate(self.selected_samples),
-            weight=np.concatenate(self.weights),
-            score=np.concatenate(self.scores),
+            weight=np.concatenate(w),
+            score=np.concatenate(s),
         )
         for k,v in samples.items():
             d2_dict[k] = v
@@ -369,6 +384,8 @@ class CEM_Beta_1D(CEM):
 
     def __init__(self, *args, **kwargs):
         super(CEM_Beta_1D, self).__init__(*args, **kwargs)
+        self.default_dist_titles = 'kill_prob'
+        self.default_samp_titles = 'kill_prob'
 
     def do_sample(self, dist):
         return np.random.beta(2*dist, 2-2*dist)
@@ -379,6 +396,27 @@ class CEM_Beta_1D(CEM):
     def update_sample_distribution(self, samples, weights):
         return np.clip(np.mean(np.array(weights)*np.array(samples)) / \
                        np.mean(weights), 0.001, 0.999)
+
+
+class CEM_Ber(CEM):
+    '''CEM for Bernoulli distribution.'''
+
+    def __init__(self, *args, **kwargs):
+        super(CEM_Ber, self).__init__(*args, **kwargs)
+        self.default_dist_titles = 'guard_prob'
+        self.default_samp_titles = 'guard'
+
+    def do_sample(self, dist):
+        return int(np.random.random()<dist)
+
+    def pdf(self, x, dist):
+        # note: x should be either 0 or 1
+        return 1-dist[0] if x[0]<0.5 else dist[0]
+
+    def update_sample_distribution(self, samples, weights):
+        w = np.array(weights)
+        s = np.array(samples)
+        return np.mean(w*s)/np.mean(w)
 
 
 if __name__ == '__main__':
