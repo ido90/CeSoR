@@ -8,7 +8,8 @@ import utils
 
 class GCVaR:
     def __init__(self, optimizer, batch_size, alpha=1, scheduler=None,
-                 alpha1_normalizer=np.mean, title='GCVaR', check_nans=True):
+                 alpha1_normalizer=np.mean, skip_steps=0, check_nans=True,
+                 title='GCVaR'):
         # Configuration
         self.title = title
         self.o = optimizer  # torch optimizer
@@ -20,6 +21,7 @@ class GCVaR:
         # scores normalizer for alpha=1 (since alpha=1 is not CVaR,
         #  we don't have to use q_alpha anymore).
         self.alpha1_normalizer = alpha1_normalizer
+        self.skip_steps = skip_steps
         self.check_nans = check_nans
 
         # State
@@ -31,6 +33,7 @@ class GCVaR:
         self.scores = [[]]  # n_batches x batch_size
         self.weights = [[]]  # n_batches x batch_size
         self.selected = [[]]  # n_batches x batch_size
+        self.lr = []  # n_batches
         self.alphas = []  # n_batches
         self.q_alpha = []  # n_batches
         self.sample_size = []  # n_batches
@@ -46,7 +49,7 @@ class GCVaR:
             self.batch_count, self.sample_count, self.logprobs,
             self.scores, self.weights, self.selected,
             self.alphas, self.q_alpha, self.sample_size,
-            self.eff_sample_size, self.losses
+            self.eff_sample_size, self.losses, self.lr
         )
         with open(filename, 'wb') as h:
             pkl.dump(obj, h)
@@ -60,7 +63,7 @@ class GCVaR:
         self.batch_count, self.sample_count, self.logprobs, \
         self.scores, self.weights, self.selected, \
         self.alphas, self.q_alpha, self.sample_size, \
-        self.eff_sample_size, self.losses = obj
+        self.eff_sample_size, self.losses, self.lr = obj
 
     def reset_training(self):
         self.batch_count = 0
@@ -165,7 +168,11 @@ class GCVaR:
 
         self.o.zero_grad()
         loss.backward()
-        self.o.step()
+        if self.batch_count >= self.skip_steps:
+            self.lr.append(self.o.param_groups[0]['lr'])
+            self.o.step()
+        else:
+            self.lr.append(0)
 
         if self.check_nans and torch.any(torch.isnan(
                 self.o.param_groups[0]['params'][0])):
@@ -181,6 +188,7 @@ class GCVaR:
         d1 = pd.DataFrame(dict(
             title=self.title,
             batch=np.arange(n_batches),
+            lr=self.lr,
             alpha=self.alphas,
             q_alpha=self.q_alpha,
             sample_size=self.sample_size,
@@ -205,7 +213,8 @@ class GCVaR:
 
 def alpha_scheduler(iter, alpha, soft_cvar=0, n_iters=1):
     if soft_cvar:
-        if iter < soft_cvar * n_iters:
-            return 1 - (iter/(soft_cvar*n_iters)) * (1-alpha)
+        n = soft_cvar * n_iters
+        if iter < n:
+            return 1 - iter/n * (1-alpha)
         return alpha
     return alpha
