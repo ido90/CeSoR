@@ -5,10 +5,10 @@ leading to a large negative reward with small probability whenever this path is 
 The code is based on the FourRooms environment by Stav Belogolovsky.
 Modified by Ido Greenberg, 2022.
 '''
-
 import numpy as np
 from scipy import stats
 import pandas as pd
+import matplotlib.pyplot as plt
 from gym import core, spaces
 from gym.utils import seeding
 import utils
@@ -341,12 +341,12 @@ class GuardedMaze(core.Env):
     def render(self, mode='human', close=False):
         return 0
 
-def _evaluate_strategies(n=8, max_cost=2, goal_val=1, guard_prob=0.05, guard_cost=4,
+def evaluate_strategies(n=8, max_cost=2, goal_val=1, guard_prob=0.05, guard_cost=4,
                          short_dist=1):
     axs = utils.Axes(2, 2)
 
     kp = np.arange(0,1.01,0.01) # guard probabilities
-    kc = stats.expon.ppf(np.arange(0,1,0.01), guard_cost) # guard costs
+    kc = stats.expon.ppf(np.arange(0,1,0.01), 0, guard_cost) # guard costs
     L = 2 * n # going from one end to the other
     max_cost *= L
     goal_val *= L
@@ -371,5 +371,6 @@ def _evaluate_strategies(n=8, max_cost=2, goal_val=1, guard_prob=0.05, guard_cos
 
     axs.labs(0, 'guard prob', f'E[loss | cost={guard_cost}]')
     axs.labs(1, 'guard cost', f'E[loss | prob={guard_prob}]')
+    plt.tight_layout()
 
     return axs
