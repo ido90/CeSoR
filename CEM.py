@@ -19,7 +19,7 @@ implementation of the following methods:
 Note that dist is an object that represents the distribution, and its type is
 up to the user. A standard type may be a list of distribution parameters.
 
-An example for an inheritance from CEM is provided below - see CEM_Beta_1D.
+Examples for inheritance from CEM are provided below - see CEM_Beta, CEM_Ber.
 A simple usage example is provided in the bottom of this file - see __main__.
 
 Module structure:
@@ -35,7 +35,8 @@ CEM:
         if there're enough samples and it's time to update the distribution:
             select_samples().
             update_sample_distribution(samples, weights).   [IMPLEMENTED BY USER]
-CEM_Beta_1D: an inherited class implementing CEM for a 1D Beta distribution.
+CEM_Beta: an inherited class implementing CEM for a 1D Beta distribution.
+CEM_Ber: an inherited class implementing CEM for a 1D Bernoulli distribution.
 
 Written by Ido Greenberg, 2022.
 '''
@@ -376,14 +377,14 @@ def quantile(x, q, w=None, is_sorted=False, estimate_underlying_quantile=False):
     return np.interp(q, w, x)
 
 
-class CEM_Beta_1D(CEM):
+class CEM_Beta(CEM):
     '''Implementation example of the CEM for a 1D Beta distribution.'''
 
     # Note: in this 1D case, dist is a scalar in [0,1]. In general, dist may be
     #  any object that represents a distribution (e.g., any kind of array).
 
     def __init__(self, *args, **kwargs):
-        super(CEM_Beta_1D, self).__init__(*args, **kwargs)
+        super(CEM_Beta, self).__init__(*args, **kwargs)
         self.default_dist_titles = 'kill_prob'
         self.default_samp_titles = 'kill_prob'
 
@@ -394,8 +395,9 @@ class CEM_Beta_1D(CEM):
         return stats.beta.pdf(x, 2*dist, 2-2*dist)
 
     def update_sample_distribution(self, samples, weights):
-        return np.clip(np.mean(np.array(weights)*np.array(samples)) / \
-                       np.mean(weights), 0.001, 0.999)
+        w = np.array(weights)
+        s = np.array(samples)
+        return np.clip(np.mean(w*s)/np.mean(w), 0.001, 0.999)
 
 
 class CEM_Ber(CEM):
@@ -411,7 +413,7 @@ class CEM_Ber(CEM):
 
     def pdf(self, x, dist):
         # note: x should be either 0 or 1
-        return 1-dist[0] if x[0]<0.5 else dist[0]
+        return 1-dist if x<0.5 else dist
 
     def update_sample_distribution(self, samples, weights):
         w = np.array(weights)
@@ -430,7 +432,7 @@ if __name__ == '__main__':
     n_steps = 10
     N = 1000
 
-    ce = CEM_Beta_1D(dist=0.5, batch_size=N, w_clip=0,
+    ce = CEM_Beta(dist=0.5, batch_size=N, w_clip=0,
                      internal_alpha=0.5, ref_alpha=0.1)
     for batch in range(n_steps):
         for iter in range(N):
