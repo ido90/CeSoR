@@ -24,7 +24,7 @@ class GuardedMaze(core.Env):
     metadata = {'render.modes': ['human']}
 
     def __init__(self, mode=1, rows=None, cols=None, action_noise=0.2, max_steps=None,
-                 gurad_prob=0.05, guard_cost=4, rand_prob=False, rand_cost=False,
+                 guard_prob=0.05, guard_cost=4, rand_guard=False, rand_cost=False,
                  seed=None, detailed_r=False, force_motion=False, collect=False,
                  fixed_reset=False, init_state=None, goal_state=None, continuous=True):
         self.mode = mode
@@ -36,9 +36,9 @@ class GuardedMaze(core.Env):
         self.rng = np.random.RandomState(seed)
         self.continuous = continuous
 
-        self.guard_prob = gurad_prob
+        self.guard_prob = guard_prob
         self.guard_cost = guard_cost
-        self.rand_guard = rand_prob
+        self.rand_guard = rand_guard
         self.rand_cost = rand_cost
         self.detailed_r = detailed_r
         self.rows, self.cols = rows, cols
