@@ -27,13 +27,14 @@ class Experiment:
                  test_episodes=100, global_seed=0, maze_mode=1, maze_size=None,
                  max_episode_steps=None,
                  detailed_rewards=False, valid_freq=10, save_best_model=True,
-                 kill_prob=0.05, beta_kill_dist=True,
+                 guard_prob=0.05, guard_cost=4, rand_guard=True, rand_cost=False,
                  action_noise=0.2, max_distributed=0,
-                 optimizer=optim.Adam, optim_freq=100, optim_q_ref=True,
+                 optimizer=optim.Adam, optim_freq=100, optim_q_ref=None,
                  cvar=1, soft_cvar=0, zero_loss_tolerance=20,
-                 gamma=1.0, lr=1e-2, weight_decay=0.0, state_mode='mid_map_xy',
+                 gamma=1.0, lr=1e-2, lr_gamma=1, lr_step=0, weight_decay=0.0,
+                 state_mode='mid_map_xy', ce_warmup_turns=5,
                  use_ce=False, ce_alpha=0.2, ce_ref_mode='train', ce_ref_alpha=None,
-                 ce_n_orig=None, ce_w_clip=5,
+                 ce_n_orig=None, ce_w_clip=5, ce_constructor=None,
                  log_freq=2000, T0=1, Tgamma=1, title=''):
         self.title = title
         self.global_seed = global_seed
@@ -56,11 +57,13 @@ class Experiment:
         self.valid_freq = valid_freq
         self.save_best_model = save_best_model
 
-        self.kill_prob = kill_prob
-        # If true - model killing probability using Beta(a,2-a), whose mean
-        # is kill_prob=a/2 and variance is a*(2-a)/12.
+        self.guard_prob = guard_prob
+        self.guard_cost = guard_cost
+        # If true - model guard probability using Beta(a,2-a), whose mean
+        # is guard_prob=a/2 and variance is a*(2-a)/12.
         # https://en.wikipedia.org/wiki/Beta_distribution
-        self.use_beta_dist = beta_kill_dist
+        self.rand_guard = rand_guard
+        self.rand_cost = rand_cost
         self.action_noise = action_noise
 
         self.optimizers = {}
@@ -72,6 +75,8 @@ class Experiment:
         self.soft_cvar = soft_cvar
         self.gamma = gamma # note: 0.98^100=13%, 0.99^200=13%
         self.lr = lr
+        self.lr_step = lr_step
+        self.lr_gamma = lr_gamma
         self.weight_decay = weight_decay
         self.log_freq = log_freq
         self.max_distributed = int(max_distributed)
@@ -86,9 +91,18 @@ class Experiment:
         self.valid_scores = {}
 
         self.CEs = {}
+        if ce_constructor is None:
+            if self.rand_cost:
+                ce_constructor = CEM.CEM_Ber_Exp
+            elif self.rand_guard:
+                ce_constructor = CEM.CEM_Beta
+            else:
+                ce_constructor = CEM.CEM_Ber
+        self.ce_constructor = ce_constructor
         if ce_n_orig is None:
             ce_n_orig = int(0.2*self.optim_freq) if ce_ref_mode=='train' else 0
         self.ce_update_freq = use_ce
+        self.ce_warmup_turns = ce_warmup_turns
         self.ce_w_clip = ce_w_clip
         self.ce_ref_mode = ce_ref_mode
         self.ce_ref_alpha = ce_ref_alpha
@@ -108,8 +122,9 @@ class Experiment:
             id='GuardedMazeEnv-v0',
             entry_point='GuardedMaze:GuardedMaze',
             kwargs=dict(
-                mode=self.maze_mode, kill_prob=self.kill_prob,
-                action_noise=self.action_noise,
+                mode=self.maze_mode, guard_prob=self.guard_prob,
+                guard_cost=self.guard_cost, action_noise=self.action_noise,
+                rand_guard=self.rand_guard, rand_cost=self.rand_cost,
                 rows=self.maze_size, max_steps=self.max_episode_steps,
                 detailed_r=self.detailed_rewards),
         )
@@ -127,9 +142,11 @@ class Experiment:
             ag_updates     = n * [ag_updates],
             ag_hash        = n * [ag_hash],
             ag_temperature = n * [temperature],
-            dyn_kp         = n * [np.nan],
+            guard_prob     = n * [np.nan],
+            guard_cost     = n * [np.nan],
             s0_x           = n * [np.nan],
             s0_y           = n * [np.nan],
+            path           = n * [np.nan],
             log_prob       = n * [np.nan],
             ret_loss       = n * [np.nan],
             score          = n * [np.nan],
@@ -152,13 +169,18 @@ class Experiment:
         if seed is not None: np.random.seed(seed)
         if s0_dist is None:
             s0_dist = (0.6,0.6,6.4,6.4) if self.maze_mode==2 else (0.6,0.6,3.6,3.6)
-        if dyn_dist is None: dyn_dist = self.kill_prob
+        if dyn_dist is None: dyn_dist = (self.guard_prob, self.guard_cost)
         dyn_dist = np.array(dyn_dist)
 
-        if self.use_beta_dist:
-            dyn = np.random.beta(2*dyn_dist, 2-2*dyn_dist)
+        if self.rand_cost:
+            dyn = [
+                int(np.random.random() < dyn_dist[0]),
+                np.random.exponential(dyn_dist[1])
+            ]
+        elif self.rand_guard:
+            dyn = [np.random.beta(2*dyn_dist[0], 2-2*dyn_dist[0]), dyn_dist[1]]
         else:
-            dyn = np.random.exponential(np.array(dyn_dist), size=(len(dyn_dist),))
+            dyn = [int(np.random.random() < dyn_dist[0]), dyn_dist[1]]
 
         a = np.array(s0_dist[:2])
         b = np.array(s0_dist[2:])
@@ -184,7 +206,7 @@ class Experiment:
 
         init_states = np.array(
             [self.draw_episode_params()[1] for _ in range(self.n_train)])
-        dd_base.iloc[:, 7:9] = init_states
+        dd_base.iloc[:, 8:10] = init_states
 
         for agent_nm in agents_names:
             dd = dd_base.copy()
@@ -203,8 +225,8 @@ class Experiment:
             group=self.n_valid * ['valid'] + self.n_test * ['test'],
             inplace=False
         )
-        dd_base.iloc[:,6:7] = self.test_episodes_params[0]  # dynamics
-        dd_base.iloc[:,7:9] = self.test_episodes_params[1]  # init states
+        dd_base.iloc[:,6:8] = self.test_episodes_params[0]  # dynamics
+        dd_base.iloc[:,8:10] = self.test_episodes_params[1]  # init states
 
         for agent_nm in agents_names:
             dd = dd_base.copy()
@@ -283,20 +305,20 @@ class Experiment:
 
     def init_episode(self, episode, update=False):
         # get params if already known
-        dyn = self.dd.iloc[episode, 6:7].values.astype(np.float)
-        s0 = self.dd.iloc[episode, 7:9].values.astype(np.float)
+        dyn = self.dd.iloc[episode, 6:8].values.astype(np.float)
+        s0 = self.dd.iloc[episode, 8:10].values.astype(np.float)
         if np.any(np.isnan(dyn)): dyn = None
         if np.any(np.isnan(s0)): s0 = None
 
         # reset env with params
-        out_dyn, out_s0 = self.env.reset(kill_prob=dyn[0], init_state=s0)
+        out_dyn, out_s0 = self.env.reset(*dyn, s0)
 
         # save params if were not set before
         if update:
             if dyn is None:
-                self.dd.iloc[episode, 6:7] = out_dyn
+                self.dd.iloc[episode, 6:8] = out_dyn
             if s0 is None:
-                self.dd.iloc[episode, 7:9] = out_s0
+                self.dd.iloc[episode, 8:10] = out_s0
 
         return out_s0
 
@@ -326,6 +348,7 @@ class Experiment:
             observation = self.init_episode(episode, update=update_res)
 
             # run episode
+            info = {}
             for i in range(self.env.max_steps):
                 if verbose >= 2:
                     print(observation)
@@ -355,6 +378,7 @@ class Experiment:
                     break
 
             # summarize results
+            path = info['path']
             T = len(rewards)
             score = np.sum(rewards)
             returns = np.zeros(T)
@@ -369,6 +393,7 @@ class Experiment:
                 self.dd.loc[episode,'ag_updates'] = agent.n_updates
                 self.dd.loc[episode,'ag_hash'] = agent.get_params_hash()
                 self.dd.loc[episode,'ag_temperature'] = temperature
+                self.dd.loc[episode,'path'] = path
                 self.dd.loc[episode,'log_prob'] = log_prob.item()
                 self.dd.loc[episode,'ret_loss'] = ret_loss.item()
                 self.dd.loc[episode,'score'] = score
@@ -383,7 +408,7 @@ class Experiment:
             self.env.close()
             self.env._show_state(ax=ax)
 
-        return score, log_prob, ret_loss, T
+        return score, log_prob, ret_loss, T, path
 
     def show_episode(self, idx=None, episode=None, agent_nm=None, group=None,
                      verbose=2, **kwargs):
@@ -414,8 +439,9 @@ class Experiment:
                 self.print_hash_info(agent_nm=agent_nm, verbose=verbose-1)
 
         agent.eval()
-        score, _, _, T = self.run_episode(idx, agent, render=True, update_res=False,
-                                          verbose=verbose-1, **kwargs)
+        score, _, _, T, _ = self.run_episode(
+            idx, agent, render=True, update_res=False,
+            verbose=verbose-1, **kwargs)
         agent.train()
         return score, T
 
@@ -440,8 +466,13 @@ class Experiment:
 
     def draw_train_episode_params(self, idx, ce=None):
         if ce is None: ce = self.CEs[self.dd.agent[idx]]
-        kp, w = ce.sample()
-        self.dd.loc[idx, 'dyn_kp'] = kp
+        if self.rand_cost:
+            (p,c), w = ce.sample()
+        else:
+            p, w = ce.sample()
+            c = self.guard_cost
+        self.dd.loc[idx, 'guard_prob'] = p
+        self.dd.loc[idx, 'guard_cost'] = c
         self.dd.loc[idx, 'ag_temperature'] = self.T
         return w
 
@@ -456,6 +487,7 @@ class Experiment:
             return getattr(self, x)
 
         # get optimization hparams
+        optimizer_constructor = get_value('optimizer_constructor')
         lr = get_value('lr')
         weight_decay = get_value('weight_decay')
         optim_freq = get_value('optim_freq')
@@ -465,36 +497,48 @@ class Experiment:
         cvar = get_value('cvar')
         soft_cvar = get_value('soft_cvar')
 
-        # prepare optimizer
-        valid_fun = (lambda x: np.mean(sorted(x)[:int(np.ceil(cvar*len(x)))])) \
-            if (0<cvar<1) else np.mean
-        cvar_scheduler = (soft_cvar, self.n_train//self.optim_freq)
-        optimizer = self.optimizer_constructor(
-            agent.parameters(), lr=lr, weight_decay=weight_decay)
-        optimizer_wrap = GCVaR.GCVaR(
-            optimizer, optim_freq, cvar, cvar_scheduler, title=agent.title)
-        self.optimizers[agent.title] = optimizer_wrap
-
         # get CE hparams
         update_freq = get_value('ce_update_freq')
+        ce_warmup_turns = get_value('ce_warmup_turns')
         w_clip = get_value('ce_w_clip')
         ref_mode = get_value('ce_ref_mode')
         ref_alpha = get_value('ce_ref_alpha')
         n_orig = get_value('ce_n_orig')
         internal_alpha = get_value('ce_internal_alpha')
+        if update_freq == 0:
+            ce_warmup_turns = 0
+            n_orig = 0
+
+        # prepare optimizer
+        n_iters = self.n_train // optim_freq
+        valid_fun = (lambda x: np.mean(sorted(x)[:int(np.ceil(cvar*len(x)))])) \
+            if (0<cvar<1) else np.mean
+        cvar_scheduler = (soft_cvar, n_iters)
+        optimizer = optimizer_constructor(
+            agent.parameters(), lr=lr, weight_decay=weight_decay)
+        optimizer_wrap = GCVaR.GCVaR(
+            optimizer, optim_freq, cvar, cvar_scheduler,
+            skip_steps=ce_warmup_turns, title=agent.title)
+        self.optimizers[agent.title] = optimizer_wrap
+
+        lr_scheduler = None
+        if self.lr_step:
+            lr_scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer, step_size=self.lr_step, gamma=self.lr_gamma)
 
         # prepare CE
         if ref_alpha is None: ref_alpha = cvar
-        ce = CEM.CEM_Beta_1D(
-            self.kill_prob, batch_size=update_freq * self.optim_freq,
-            ref_mode=ref_mode, ref_alpha=ref_alpha, w_clip=w_clip,
+        ce = self.ce_constructor(
+            (self.guard_prob, self.guard_cost) if self.rand_cost else self.guard_prob,
+            batch_size=int(update_freq * optim_freq), w_clip=w_clip,
+            ref_mode=ref_mode, ref_alpha=ref_alpha,
             n_orig_per_batch=n_orig, internal_alpha=internal_alpha,
             title=agent.title)
         self.CEs[agent.title] = ce
 
         if len(hparam_keys) > 0:
             warnings.warn(f'Unused hyper-params for {agent.title}: {hparam_keys}')
-        return optimizer_wrap, valid_fun, optim_q_ref, T0, Tgamma, \
+        return optimizer_wrap, valid_fun, optim_q_ref, lr_scheduler, T0, Tgamma, \
                ref_mode=='valid', ce
 
     def train_agent(self, agent_nm, log_freq=None, verbose=1, **kwargs):
@@ -505,8 +549,8 @@ class Experiment:
             agent.load(agent.pretrained_filename)
         agent.train()
 
-        optimizer_wrap, valid_fun, optim_q_ref, T0, Tgamma, ce_valid, ce = \
-            self.prepare_training(agent)
+        optimizer_wrap, valid_fun, optim_q_ref, lr_scheduler, T0, Tgamma, \
+        ce_valid, ce = self.prepare_training(agent)
 
         # get episodes
         ids = np.arange(len(self.dd))[
@@ -528,7 +572,7 @@ class Experiment:
             w = self.draw_train_episode_params(idx, ce)
 
             # run episode
-            score, log_prob, ret_loss, n_steps = self.run_episode(
+            score, log_prob, ret_loss, n_steps, path = self.run_episode(
                 idx, agent, update_res=True, temperature=self.T, **kwargs)
 
             # update CEM
@@ -540,7 +584,7 @@ class Experiment:
             ref_scores = None
             if ce.n_orig_per_batch > 1:
                 ref_scores = optimizer_wrap.scores[-1][:ce.n_orig_per_batch]
-            elif optim_q_ref:
+            elif optim_q_ref or (optim_q_ref is None and ce.batch_size):
                 ref_scores = self.valid_scores[agent_nm][-1]
 
             # optimize
@@ -548,6 +592,8 @@ class Experiment:
                                    f'models/{self.title}_{agent_nm}'):
                 agent.n_updates += 1
                 self.T *= Tgamma
+                if lr_scheduler is not None:
+                    lr_scheduler.step()
                 # validation
                 if (agent.n_updates % self.valid_freq) == 0:
                     self.valid_scores[agent_nm].append(
@@ -575,8 +621,12 @@ class Experiment:
 
             # log
             if log_freq > 0 and ((i + 1) % log_freq) == 0:
+                longs = self.dd[(self.dd.agent==agent_nm) &
+                                (self.dd.group=='train') &
+                                (self.dd.ag_updates==agent.n_updates-1)].path == 1
                 print(f'\t[{i + 1:03d}/{len(ids):03d}, {agent_nm}] valid_mean='
-                      f'{valid_mean:.1f}\t({time.time() - t0:.0f}s)')
+                      f'{valid_mean:.1f}\tlong_path={100*longs.mean():.1f}%\t'
+                      f'({time.time() - t0:.0f}s)')
 
         # load best model
         if self.save_best_model:
@@ -649,7 +699,9 @@ class Experiment:
                     print(f'Missing optimizer file {filename}.opt')
 
                 # update CE sampler
-                self.CEs[agent_nm] = CEM.CEM_Beta_1D(self.kill_prob)
+                self.CEs[agent_nm] = self.ce_constructor(
+                    (self.guard_prob, self.guard_cost) if self.rand_cost \
+                        else self.guard_prob)
                 hp = self.agents[agent_nm].train_hparams
                 if self.ce_update_freq or (
                         hp is not None and 'ce_update_freq' in hp and
@@ -658,6 +710,8 @@ class Experiment:
                         self.CEs[agent_nm].load(filename)
                     except:
                         print(f'Missing CE file {filename}.cem')
+
+        self.enrich_results()
 
     @staticmethod
     def train_agent_wrapper(q, E, agent_nm, kwargs):
@@ -788,6 +842,31 @@ class Experiment:
 
     ###############   ANALYSIS   ###############
 
+    def enrich_results(self, optimizers=True, CEs=True):
+        if optimizers:
+            cols = dict(opt_selected='selected')
+            for col in cols:
+                self.dd[col] = np.nan
+            for ag in self.optimizers:
+                o1, o2 = self.optimizers[ag].get_data()
+                if len(o2):
+                    ids = (self.dd.agent==ag) & (self.dd.group=='train') & \
+                          (~self.dd.score.isna())
+                    for k,v in cols.items():
+                        self.dd.loc[ids, k] = o2[v].values
+
+        if CEs:
+            cols = dict(ce_selected='selected', weight='weight')
+            for col in cols:
+                self.dd[col] = np.nan
+            for ag in self.CEs:
+                c1, c2 = self.CEs[ag].get_data()
+                if len(c2):
+                    ids = (self.dd.agent==ag) & (self.dd.group=='train') & \
+                          (~self.dd.score.isna())
+                    for k,v in cols.items():
+                        self.dd.loc[ids, k] = c2[v].values
+
     def save_results(self, fname=None, agents=False, optimizers=False, CEs=False):
         if fname is None: fname=f'outputs/{self.title}'
         fname += '.pkl'
@@ -830,8 +909,8 @@ class Experiment:
             valid_df = pd.concat((valid_df, pd.DataFrame(dict(
                 agent=agent,
                 group='valid',
-                train_iteration=self.valid_freq * np.repeat(np.arange(len(valid_scores)),
-                                                            len(valid_scores[0])),
+                train_iteration=self.valid_freq * np.repeat(
+                    np.arange(len(valid_scores)), len(valid_scores[0])),
                 episode=len(valid_scores) * list(np.arange(len(valid_scores[0]))),
                 score=np.concatenate(valid_scores)
             ))))
@@ -857,7 +936,7 @@ class Experiment:
             ce = self.CEs[ag]
             if not ce.batch_size:
                 continue
-            d1, d2 = ce.get_data('hit_prob', 'hit_prob')
+            d1, d2 = ce.get_data()
             ce_batch_data = pd.concat((ce_batch_data, d1))
             ce_sample_data = pd.concat((ce_sample_data, d2))
         if len(ce_batch_data) > 0:
@@ -905,7 +984,8 @@ class Experiment:
         if verify_train_success:
             agents = [ag for ag in agents if self.last_train_success[ag]]
 
-        axs = utils.Axes(7+len(train_estimators), W, axsize, fontsize=15)
+        axs = utils.Axes(14+len(train_estimators)+self.rand_cost,
+                         W, axsize, fontsize=15)
         a = 0
 
         # Train scores
@@ -932,6 +1012,11 @@ class Experiment:
         a += 1
 
         # Optimizer: sample sizes and weights
+        self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a+0, track='stay')
+        self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a+3, track='short')
+        self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a+6, track='long')
+        a += 9
+
         filter_trivial_agents = False
         if filter_trivial_agents:
             keep_agents = [ag for ag in agents if np.any(
@@ -953,7 +1038,7 @@ class Experiment:
             axs.labs(a, 'train iteration', 'effective sample size [%]')
             a += 1
 
-        # CE: weights
+        # CE: distributions and weights
         if len(ce_sample_data) > 0:
             iter_resol = 1 + ce_sample_data.batch.values[-1] // 4
             ce_sample_data['iter_rounded'] = [
@@ -964,43 +1049,67 @@ class Experiment:
             axs[a].legend(fontsize=13)
             a += 1
 
-        self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a)
-        a += 2
-
         if len(ce_batch_data) > 0:
-            axs[a].axhline(100*self.kill_prob, color='k', label='original')
+            axs[a].axhline(100*self.guard_prob, color='k', label='original')
             for agent in agents:
-                y = 100 * ce_batch_data.hit_prob[ce_batch_data.agent==agent].values
-                if np.any(y!=100*self.kill_prob):
+                y = 100 * ce_batch_data.guard_prob[ce_batch_data.agent==agent].values
+                if np.any(y!=100*self.guard_prob):
                     axs[a].plot(np.arange(len(y)), y, '.-', label=agent)
             axs[a].set_ylim((0, 100))
-            axs.labs(a, 'train iteration', 'average hit probability [%]')
+            axs.labs(a, 'train iteration', 'guard probability [%]')
             axs[a].legend(fontsize=13)
             a += 1
+
+            if self.rand_cost:
+                axs[a].axhline(self.guard_cost, color='k', label='original')
+                for agent in agents:
+                    y = ce_batch_data.guard_cost[ce_batch_data.agent==agent].values
+                    if np.any(y!=self.guard_cost):
+                        axs[a].plot(np.arange(len(y)), y, '.-', label=agent)
+                axs.labs(a, 'train iteration', 'average guard cost')
+                axs[a].legend(fontsize=13)
+                a += 1
 
         plt.tight_layout()
         return axs
 
-    def analyze_exposure(self, dd, agents=None, good_threshold=None,
-                         axs=None, a0=0):
+    def analyze_exposure(self, dd, agents=None, axs=None, a0=0, track='long'):
         if agents is None: agents = self.agents_names
         dd = dd[dd.agent.isin(agents)]
+        paths = self.dd.path[(self.dd.group=='train')&
+                self.dd.agent.isin(agents)&(~self.dd.score.isna())].values
+        dd['long'] = 100 * (paths == dict(short=-1,stay=0,long=1)[track])
+        dd['long_fed'] = dd.long * dd.selected
+        def batch_weight(d):
+            if d.selected.sum() > 0:
+                d['w'] = d.weight * len(d) / d[
+                    d.selected.astype(bool)].weight.sum()
+            else:
+                d['w'] = 0
+            return d
+        dd = dd.groupby(['agent','batch']).apply(batch_weight)
+        dd['long_fed_w'] = dd.long * dd.selected * dd.w
 
-        if good_threshold is None: good_threshold = -32 * self.maze_mode
-        dd['success'] = 100 * (dd.score > good_threshold)
-        dd['used_success'] = dd.success * dd.selected
+        if axs is None: axs = utils.Axes(3, 3, (5.5,3.5), fontsize=15)
 
-        if axs is None: axs = utils.Axes(2, 2, (5.5,3.5), fontsize=15)
-
-        sns.lineplot(data=dd, x='batch', hue='agent', y='success',
+        sns.lineplot(data=dd, x='batch', hue='agent', y='long',
                      ci=None, ax=axs[a0+0])
-        sns.lineplot(data=dd, x='batch', hue='agent', y='used_success',
+        # sns.lineplot(data=dd[dd.long], x='batch', hue='agent', y='long_fed',
+        #              ci=None, ax=axs[a0+1])
+        sns.lineplot(data=dd, x='batch', hue='agent', y='long_fed_w',
                      ci=None, ax=axs[a0+1])
+        sns.lineplot(data=dd[(dd.long>0)&dd.selected], x='batch', hue='agent',
+                     y='score', ci=None, ax=axs[a0+2])
 
-        axs.labs(a0+0, 'train iteration', 'successful episodes')
-        axs.labs(a0+1, 'train iteration', 'successful episodes\nfed to optimizer')
-        plt.setp(axs[a0+0].get_legend().get_texts(), fontsize='13')
-        plt.setp(axs[a0+1].get_legend().get_texts(), fontsize='13')
+        axs.labs(a0+0, 'train iteration', f'{track}-path episodes [%]')
+        # axs.labs(a0+1, 'train iteration',
+        #          f'{track}-path episodes\nfed to optimizer [%]')
+        axs.labs(a0+1, 'train iteration',
+                 f'weighted {track}-path episodes\nfed to optimizer [%]')
+        axs.labs(a0+2, 'train iteration',
+                 f'{track}-path scores\nfed to optimizer [%]')
+        for a in range(3):
+            plt.setp(axs[a0+a].get_legend().get_texts(), fontsize='13')
         plt.tight_layout()
 
         return axs
@@ -1054,7 +1163,7 @@ if __name__ == '__main__':
 
     E = Experiment(SAMPLE_AGENT_CONFS, train_episodes=6000,
                    valid_episodes=40, test_episodes=500,
-                   optim_freq=400, kill_prob=0.05, title='demo')
+                   optim_freq=400, title='demo')
     E.main()
     print(E.dd.tail())
     E.show_tests(clean_plot=True)
