@@ -9,7 +9,7 @@ import utils
 class GCVaR:
     def __init__(self, optimizer, batch_size, alpha=1, scheduler=None,
                  alpha1_normalizer=np.mean, skip_steps=0, check_nans=True,
-                 title='GCVaR'):
+                 external_q=False, detailed_records=True, title='GCVaR'):
         # Configuration
         self.title = title
         self.o = optimizer  # torch optimizer
@@ -22,6 +22,8 @@ class GCVaR:
         #  we don't have to use q_alpha anymore).
         self.alpha1_normalizer = alpha1_normalizer
         self.skip_steps = skip_steps
+        self.external_q = external_q
+        self.detailed_records = detailed_records
         self.check_nans = check_nans
 
         # State
@@ -40,6 +42,15 @@ class GCVaR:
         # https://en.wikipedia.org/wiki/Effective_sample_size#Weighted_samples
         self.eff_sample_size = []  # n_batches
         self.losses = []  # n_batches
+
+        # Detailed data
+        self.prev_params = None
+        self.hashes = []
+        self.abs_grads = []
+        self.params_diff = []
+        self.Rmin = []
+        self.Rmax = []
+        self.Rsmax = []
 
     def save(self, filename=None):
         if filename is None: filename = f'models/{self.title}'
@@ -77,6 +88,14 @@ class GCVaR:
         self.sample_size = []
         self.eff_sample_size = []
         self.losses = []
+
+        self.prev_params = None
+        self.hashes = []
+        self.abs_grads = []
+        self.params_diff = []
+        self.Rmin = []
+        self.Rmax = []
+        self.Rsmax = []
 
     def reset_batch(self):
         self.batch_count += 1
@@ -131,8 +150,11 @@ class GCVaR:
             if ref_scores is None:
                 ref_scores = self.scores[-1]
                 w = self.weights[-1]
+            ref_scores = np.array(ref_scores)
             q = utils.quantile(ref_scores, alpha, w,
                                estimate_underlying_quantile=True)
+            if self.external_q and q < np.max(ref_scores):
+                q = np.min(ref_scores[ref_scores>q])
 
         # get selected episodes for optimization
         selected = (self.scores[-1] < q) if alpha<1 else \
@@ -168,6 +190,28 @@ class GCVaR:
 
         self.o.zero_grad()
         loss.backward()
+        if self.detailed_records:
+            sel = selected.bool()
+            params = torch.cat(
+                [p.flatten() for g in self.o.param_groups
+                 for p in g['params']]).cpu().detach()
+            params_hash = hex(hash(params.numpy().tostring()))
+            tot_grad = np.sum([p.grad.abs().sum().item()
+                               for g in self.o.param_groups
+                               for p in g['params']])
+            if self.prev_params is not None:
+                params_diff = (params-self.prev_params).abs().sum().item()
+            else:
+                params_diff = None
+            self.prev_params = params
+
+            self.hashes.append(params_hash)
+            self.abs_grads.append(tot_grad)
+            self.params_diff.append(params_diff)
+            self.Rmin.append(R.min().item())
+            self.Rmax.append(R.max().item())
+            self.Rsmax.append(R[sel].max().item() if sel.sum()>0 else None)
+
         if self.batch_count >= self.skip_steps:
             self.lr.append(self.o.param_groups[0]['lr'])
             self.o.step()
@@ -196,6 +240,13 @@ class GCVaR:
             eff_sample_size_perc=100*np.array(self.eff_sample_size)/bs,
             loss=self.losses,
         ))
+        if self.detailed_records:
+            d1['hash'] =self.hashes
+            d1['abs_grad'] = self.abs_grads
+            d1['params_diff'] = self.params_diff
+            d1['Rmin'] = self.Rmin
+            d1['Rmax'] = self.Rmax
+            d1['Rsmax'] = self.Rsmax
 
         # Sample-level data
         d2 = pd.DataFrame(dict(
@@ -211,10 +262,13 @@ class GCVaR:
         return d1, d2
 
 
-def alpha_scheduler(iter, alpha, soft_cvar=0, n_iters=1):
+def alpha_scheduler(iter, alpha, soft_cvar=0, n_iters=1, skip_iters=0):
     if soft_cvar:
-        n = soft_cvar * n_iters
-        if iter < n:
-            return 1 - iter/n * (1-alpha)
+        ni = skip_iters
+        nf = soft_cvar * n_iters
+        if iter < ni:
+            return 1
+        if iter < nf:
+            return 1 - (iter-ni)/(nf-ni) * (1-alpha)
         return alpha
     return alpha
