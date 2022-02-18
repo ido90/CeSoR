@@ -30,7 +30,7 @@ class Experiment:
                  guard_prob=0.05, guard_cost=4, rand_guard=True, rand_cost=False,
                  action_noise=0.2, max_distributed=0,
                  optimizer=optim.Adam, optim_freq=100, optim_q_ref=None,
-                 cvar=1, soft_cvar=0, external_opt_q=False, zero_loss_tolerance=20,
+                 cvar=1, soft_cvar=0, optimistic_q=False, zero_loss_tolerance=10,
                  gamma=1.0, lr=1e-2, lr_gamma=1, lr_step=0, weight_decay=0.0,
                  state_mode='mid_map_xy', ce_warmup_turns=5,
                  use_ce=False, ce_alpha=0.2, ce_ref_mode='train', ce_ref_alpha=None,
@@ -73,7 +73,7 @@ class Experiment:
         self.zero_loss_tolerance = zero_loss_tolerance
         self.cvar = cvar
         self.soft_cvar = soft_cvar
-        self.external_q = external_opt_q
+        self.optimistic_q = optimistic_q
         self.gamma = gamma # note: 0.98^100=13%, 0.99^200=13%
         self.lr = lr
         self.lr_step = lr_step
@@ -497,7 +497,7 @@ class Experiment:
         Tgamma = get_value('Tgamma')
         cvar = get_value('cvar')
         soft_cvar = get_value('soft_cvar')
-        external_q = get_value('external_q')
+        optimistic_q = get_value('optimistic_q')
 
         # get CE hparams
         update_freq = get_value('ce_update_freq')
@@ -520,7 +520,7 @@ class Experiment:
             agent.parameters(), lr=lr, weight_decay=weight_decay)
         optimizer_wrap = GCVaR.GCVaR(
             optimizer, optim_freq, cvar, cvar_scheduler,
-            skip_steps=ce_warmup_turns, external_q=external_q, title=agent.title)
+            skip_steps=ce_warmup_turns, optimistic_q=optimistic_q, title=agent.title)
         self.optimizers[agent.title] = optimizer_wrap
 
         lr_scheduler = None
@@ -615,7 +615,7 @@ class Experiment:
                 # stop if loss==0 for a while (e.g. all returns are the same...)
                 losses = optimizer_wrap.losses
                 tol = self.zero_loss_tolerance
-                if tol and tol<len(losses) and np.all([l==0 for l in losses[-tol:]]):
+                if tol and tol<len(losses) and len(np.unique(losses[-tol:]))==1:
                     if verbose >= 1:
                         print(f'{agent_nm} training stopped after {i+1} episodes and '
                               f'{tol} steps with zero loss.')
