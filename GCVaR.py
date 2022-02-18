@@ -9,7 +9,7 @@ import utils
 class GCVaR:
     def __init__(self, optimizer, batch_size, alpha=1, scheduler=None,
                  alpha1_normalizer=np.mean, skip_steps=0, check_nans=True,
-                 external_q=False, detailed_records=True, title='GCVaR'):
+                 optimistic_q=False, detailed_records=True, title='GCVaR'):
         # Configuration
         self.title = title
         self.o = optimizer  # torch optimizer
@@ -22,7 +22,7 @@ class GCVaR:
         #  we don't have to use q_alpha anymore).
         self.alpha1_normalizer = alpha1_normalizer
         self.skip_steps = skip_steps
-        self.external_q = external_q
+        self.optimistic_q = optimistic_q
         self.detailed_records = detailed_records
         self.check_nans = check_nans
 
@@ -46,7 +46,8 @@ class GCVaR:
         # Detailed data
         self.prev_params = None
         self.hashes = []
-        self.abs_grads = []
+        self.mean_grads = []
+        self.max_grads = []
         self.params_diff = []
         self.Rmin = []
         self.Rmax = []
@@ -60,7 +61,9 @@ class GCVaR:
             self.batch_count, self.sample_count, self.logprobs,
             self.scores, self.weights, self.selected,
             self.alphas, self.q_alpha, self.sample_size,
-            self.eff_sample_size, self.losses, self.lr
+            self.eff_sample_size, self.losses, self.lr,
+            self.hashes, self.mean_grads, self.max_grads, self.params_diff,
+            self.Rmin, self.Rmax, self.Rsmax
         )
         with open(filename, 'wb') as h:
             pkl.dump(obj, h)
@@ -74,7 +77,9 @@ class GCVaR:
         self.batch_count, self.sample_count, self.logprobs, \
         self.scores, self.weights, self.selected, \
         self.alphas, self.q_alpha, self.sample_size, \
-        self.eff_sample_size, self.losses, self.lr = obj
+        self.eff_sample_size, self.losses, self.lr, \
+        self.hashes, self.mean_grads, self.max_grads, self.params_diff, \
+        self.Rmin, self.Rmax, self.Rsmax = obj
 
     def reset_training(self):
         self.batch_count = 0
@@ -91,7 +96,8 @@ class GCVaR:
 
         self.prev_params = None
         self.hashes = []
-        self.abs_grads = []
+        self.mean_grads = []
+        self.max_grads = []
         self.params_diff = []
         self.Rmin = []
         self.Rmax = []
@@ -112,7 +118,8 @@ class GCVaR:
             return self.alpha
         if isinstance(self.alpha_scheduler, (list, tuple)):
             return alpha_scheduler(
-                self.batch_count, self.alpha, *self.alpha_scheduler)
+                self.batch_count, self.alpha, *self.alpha_scheduler,
+                skip_iters=self.skip_steps)
         if callable(self.alpha_scheduler):
             return self.alpha_scheduler(self.batch_count, self.alpha)
         raise IOError(self.alpha_scheduler)
@@ -153,7 +160,7 @@ class GCVaR:
             ref_scores = np.array(ref_scores)
             q = utils.quantile(ref_scores, alpha, w,
                                estimate_underlying_quantile=True)
-            if self.external_q and q < np.max(ref_scores):
+            if self.optimistic_q and q < np.max(ref_scores):
                 q = np.min(ref_scores[ref_scores>q])
 
         # get selected episodes for optimization
@@ -196,17 +203,20 @@ class GCVaR:
                 [p.flatten() for g in self.o.param_groups
                  for p in g['params']]).cpu().detach()
             params_hash = hex(hash(params.numpy().tostring()))
-            tot_grad = np.sum([p.grad.abs().sum().item()
-                               for g in self.o.param_groups
-                               for p in g['params']])
             if self.prev_params is not None:
                 params_diff = (params-self.prev_params).abs().sum().item()
             else:
                 params_diff = None
             self.prev_params = params
+            grads = torch.cat(
+                [p.grad.flatten() for g in self.o.param_groups
+                 for p in g['params']]).cpu().detach().abs().numpy()
+            mean_grad = np.mean(grads)
+            max_grad = np.max(grads)
 
             self.hashes.append(params_hash)
-            self.abs_grads.append(tot_grad)
+            self.mean_grads.append(mean_grad)
+            self.max_grads.append(max_grad)
             self.params_diff.append(params_diff)
             self.Rmin.append(R.min().item())
             self.Rmax.append(R.max().item())
@@ -241,8 +251,9 @@ class GCVaR:
             loss=self.losses,
         ))
         if self.detailed_records:
-            d1['hash'] =self.hashes
-            d1['abs_grad'] = self.abs_grads
+            d1['hash'] = self.hashes
+            d1['mean_grad'] = self.mean_grads
+            d1['max_grad'] = self.max_grads
             d1['params_diff'] = self.params_diff
             d1['Rmin'] = self.Rmin
             d1['Rmax'] = self.Rmax
@@ -262,13 +273,19 @@ class GCVaR:
         return d1, d2
 
 
-def alpha_scheduler(iter, alpha, soft_cvar=0, n_iters=1, skip_iters=0):
+def alpha_scheduler(iter, alpha, soft_cvar=0, n_iters=1, skip_iters=0,
+                    resolution=0):
     if soft_cvar:
         ni = skip_iters
         nf = soft_cvar * n_iters
         if iter < ni:
             return 1
         if iter < nf:
-            return 1 - (iter-ni)/(nf-ni) * (1-alpha)
+            a = 1 - (iter-ni)/(nf-ni) * (1-alpha)
+            if resolution:
+                a /= resolution
+                a = np.ceil(a)
+                a *= resolution
+            return a
         return alpha
     return alpha
