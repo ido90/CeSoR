@@ -198,29 +198,7 @@ class GCVaR:
         self.o.zero_grad()
         loss.backward()
         if self.detailed_records:
-            sel = selected.bool()
-            params = torch.cat(
-                [p.flatten() for g in self.o.param_groups
-                 for p in g['params']]).cpu().detach()
-            params_hash = hex(hash(params.numpy().tostring()))
-            if self.prev_params is not None:
-                params_diff = (params-self.prev_params).abs().sum().item()
-            else:
-                params_diff = None
-            self.prev_params = params
-            grads = torch.cat(
-                [p.grad.flatten() for g in self.o.param_groups
-                 for p in g['params']]).cpu().detach().abs().numpy()
-            mean_grad = np.mean(grads)
-            max_grad = np.max(grads)
-
-            self.hashes.append(params_hash)
-            self.mean_grads.append(mean_grad)
-            self.max_grads.append(max_grad)
-            self.params_diff.append(params_diff)
-            self.Rmin.append(R.min().item())
-            self.Rmax.append(R.max().item())
-            self.Rsmax.append(R[sel].max().item() if sel.sum()>0 else None)
+            self.detailed_record(R, selected)
 
         if self.batch_count >= self.skip_steps:
             self.lr.append(self.o.param_groups[0]['lr'])
@@ -233,6 +211,31 @@ class GCVaR:
             print(self.o.param_groups[0]['params'])
             import pdb
             pdb.set_trace()
+
+    def detailed_record(self, R, selected):
+        selected = selected.bool()
+        params = torch.cat(
+            [p.flatten() for g in self.o.param_groups
+             for p in g['params']]).cpu().detach()
+        params_hash = hex(hash(params.numpy().tostring()))
+        if self.prev_params is not None:
+            params_diff = (params-self.prev_params).abs().sum().item()
+        else:
+            params_diff = None
+        self.prev_params = params
+        grads = torch.cat(
+            [p.grad.flatten() for g in self.o.param_groups
+             for p in g['params']]).cpu().detach().abs().numpy()
+        mean_grad = np.mean(grads)
+        max_grad = np.max(grads)
+
+        self.hashes.append(params_hash)
+        self.mean_grads.append(mean_grad)
+        self.max_grads.append(max_grad)
+        self.params_diff.append(params_diff)
+        self.Rmin.append(R.min().item())
+        self.Rmax.append(R.max().item())
+        self.Rsmax.append(R[selected].max().item() if selected.sum()>0 else None)
 
     def get_data(self):
         n_batches = self.batch_count
