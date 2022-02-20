@@ -25,7 +25,7 @@ class GuardedMaze(core.Env):
 
     def __init__(self, mode=1, rows=None, cols=None, action_noise=0.2, max_steps=None,
                  guard_prob=0.05, guard_cost=4, rand_guard=False, rand_cost=False,
-                 seed=None, detailed_r=False, force_motion=False, collect=False,
+                 seed=None, detailed_r=False, force_motion=0, collect=False,
                  fixed_reset=False, init_state=None, goal_state=None, continuous=True):
         self.mode = mode
         if rows is None: rows = MAZE_SIZE[self.mode]
@@ -174,7 +174,7 @@ class GuardedMaze(core.Env):
                 -1 if self.nsteps<2*self.L else 0)
 
         if self.force_motion and not moved:
-            r -= 1
+            r -= self.force_motion
 
         if not self.spotted:
             kz = max(self.is_kill_zone(), self.is_kill_zone(mid_cell))
