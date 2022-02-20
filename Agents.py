@@ -69,7 +69,7 @@ class NN(nn.Module):
         if verbose >= 1:
             print(f'action = {action:d}\t({choice:s})')
 
-        return action, probs[0,[action]].log(), choice
+        return action, probs[0,[action]].log(), probs.cpu().detach(), choice
 
 
 class FC(NN):

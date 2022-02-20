@@ -302,6 +302,34 @@ class Experiment:
         for agent in agents:
             self.load_agent(agent)
 
+    def load_optimizers(self, agents):
+        if isinstance(agents, str): agents = [agents]
+        for agent_nm in agents:
+            filename = f'models/{self.title}_{agent_nm}'
+            if agent_nm not in self.optimizers:
+                self.optimizers[agent_nm] = GCVaR.GCVaR(None, 0)
+                try:
+                    self.optimizers[agent_nm].load(filename)
+                except:
+                    print(f'Cannot load optimizer: {filename}.opt')
+
+    def load_CEs(self, agents):
+        if isinstance(agents, str): agents = [agents]
+        for agent_nm in agents:
+            filename = f'models/{self.title}_{agent_nm}'
+            if agent_nm not in self.CEs:
+                self.CEs[agent_nm] = self.ce_constructor(
+                (self.guard_prob, self.guard_cost) if self.rand_cost \
+                    else self.guard_prob)
+            hp = self.agents[agent_nm].train_hparams
+            if self.ce_update_freq or (
+                    hp is not None and 'ce_update_freq' in hp and
+                    hp['ce_update_freq'] > 0):
+                try:
+                    self.CEs[agent_nm].load(filename)
+                except:
+                    print(f'Cannot load CE: {filename}.cem')
+
     ###############   RUN ENV   ###############
 
     def init_episode(self, episode, update=False):
@@ -322,6 +350,24 @@ class Experiment:
                 self.dd.iloc[episode, 8:10] = out_s0
 
         return out_s0
+
+    def get_agent_input(self, observation=None):
+        if observation is None:
+            observation = self.env.get_obs()
+        agent_input = observation / self.maze_size
+        if self.state_mode == 'local_map':
+            agent_input = self.env.get_local_map().reshape(-1)
+        elif self.state_mode == 'mid_map':
+            agent_input = self.env.get_local_map(rad=2).reshape(-1)
+        elif self.state_mode == 'both':
+            agent_input = np.concatenate((
+                agent_input, self.env.get_local_map().reshape(-1)))
+        elif self.state_mode == 'mid_map_xy':
+            agent_input = np.concatenate((
+                agent_input, self.env.get_local_map(rad=2).reshape(-1)))
+        elif self.state_mode == 'full':
+            agent_input = self.env._im_from_state()
+        return agent_input
 
     def run_episode(self, episode, agent, render=False, update_res=False,
                     temperature=None, verbose=0, ax=None, **kwargs):
@@ -354,21 +400,9 @@ class Experiment:
                 if verbose >= 2:
                     print(observation)
 
-                agent_input = observation / self.maze_size
-                if self.state_mode == 'local_map':
-                    agent_input = self.env.get_local_map().reshape(-1)
-                elif self.state_mode == 'mid_map':
-                    agent_input = self.env.get_local_map(rad=2).reshape(-1)
-                elif self.state_mode == 'both':
-                    agent_input = np.concatenate((
-                        agent_input, self.env.get_local_map().reshape(-1)))
-                elif self.state_mode == 'mid_map_xy':
-                    agent_input = np.concatenate((
-                        agent_input, self.env.get_local_map(rad=2).reshape(-1)))
-                elif self.state_mode == 'full':
-                    agent_input = self.env._im_from_state()
+                agent_input = self.get_agent_input(observation)
 
-                action, log_prob, _ = agent.act(
+                action, log_prob, _, _ = agent.act(
                     agent_input, T=temperature, verbose=verbose-2, **kwargs)
                 observation, reward, done, info = self.env.step(action)
 
@@ -693,25 +727,10 @@ class Experiment:
                 self.agents[agent_nm].n_updates = d[1].ag_updates.values[-1] + 1
 
                 # update optimizer
-                filename = f'models/{self.title}_{agent_nm}'
-                self.optimizers[agent_nm] = GCVaR.GCVaR(None, 0)
-                try:
-                    self.optimizers[agent_nm].load(filename)
-                except:
-                    print(f'Missing optimizer file {filename}.opt')
+                self.load_optimizers(agent_nm)
 
                 # update CE sampler
-                self.CEs[agent_nm] = self.ce_constructor(
-                    (self.guard_prob, self.guard_cost) if self.rand_cost \
-                        else self.guard_prob)
-                hp = self.agents[agent_nm].train_hparams
-                if self.ce_update_freq or (
-                        hp is not None and 'ce_update_freq' in hp and
-                        hp['ce_update_freq'] > 0):
-                    try:
-                        self.CEs[agent_nm].load(filename)
-                    except:
-                        print(f'Missing CE file {filename}.cem')
+                self.load_CEs(agent_nm)
 
         self.enrich_results()
 
@@ -888,8 +907,8 @@ class Experiment:
 
         for anm in self.agents_names:
             if agents: self.load_agent(anm)
-            if optimizers: self.optimizers[anm].load(f'models/{self.title}_{anm}')
-            if CEs: self.CEs[anm].load(f'models/{self.title}_{anm}')
+            if optimizers: self.load_optimizers(anm)
+            if CEs: self.load_CEs(anm)
 
     def analysis_preprocessing(self, agents=None):
         if agents is None:
@@ -926,11 +945,14 @@ class Experiment:
         # optimizer data
         opt_batch_data, opt_sample_data = pd.DataFrame(), pd.DataFrame()
         for ag in agents:
-            d1, d2 = self.optimizers[ag].get_data()
+            try:
+                d1, d2 = self.optimizers[ag].get_data()
+            except:
+                continue
+            d1['agent'] = d1.title
+            d2['agent'] = d2.title
             opt_batch_data = pd.concat((opt_batch_data, d1))
             opt_sample_data = pd.concat((opt_sample_data, d2))
-        opt_batch_data['agent'] = opt_batch_data.title
-        opt_sample_data['agent'] = opt_sample_data.title
 
         # CE data
         ce_batch_data, ce_sample_data = pd.DataFrame(), pd.DataFrame()
@@ -1014,10 +1036,11 @@ class Experiment:
         a += 1
 
         # Optimizer: sample sizes and weights
-        self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a+0, track='stay')
-        self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a+3, track='short')
-        self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a+6, track='long')
-        a += 9
+        if len(opt_sample_data) > 0:
+            self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a+0, track='stay')
+            self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a+3, track='short')
+            self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a+6, track='long')
+            a += 9
 
         filter_trivial_agents = False
         if filter_trivial_agents:
@@ -1145,6 +1168,39 @@ class Experiment:
                              f'\nreproduced={s:.0f}')
                 a += 1
 
+        plt.tight_layout()
+        return axs
+
+    def visualize_policies(self, agents=None, axs=None):
+        if agents is None: agents = self.agents_names
+        if isinstance(agents, str): agents = [agents]
+        if axs is None: axs = utils.Axes(len(agents), len(agents), (2.7, 2.7),
+                                         fontsize=15, grid=False)
+
+        env = self.env
+        n = env.rows
+        for a,ag in enumerate(agents):
+            agent = self.agents[ag]
+            M = np.repeat(np.repeat(np.clip(env.map,0,1), 3, 0), 3, 1)
+            M = np.stack([np.zeros_like(M), np.zeros_like(M), M])
+            M[:, -3*2:-3*2+3, 3*2:3*2+3] = 1  # goal
+            for i in range(n):
+                for j in range(n):
+                    if env.map[i, j] < 1:
+                        env.state_cell = np.array([i, j])
+                        env.state_xy = np.array([i, j])
+                        p = agent.act(self.get_agent_input())[2].numpy().reshape(-1)
+                        i0 = 1 + 3 * i
+                        j0 = 1 + 3 * j
+                        M[:, i0, j0] = 1  # cell center
+                        M[0, i0 - 1, j0] = p[0]  # l
+                        M[1, i0 + 1, j0] = p[1]  # r
+                        M[:2, i0, j0 - 1] = p[2]  # d
+                        M[1:, i0, j0 + 1] = p[3]  # u
+            axs[a].imshow(M.T)
+            axs[a].invert_yaxis()
+            axs[a].axis('off')
+            axs.labs(a, None, None, f'{ag}')
         plt.tight_layout()
         return axs
 
