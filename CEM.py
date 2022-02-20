@@ -276,8 +276,10 @@ class CEM:
         if self.force_min_samples:
             missing_samples = int(self.internal_alpha*self.batch_size - np.sum(selection))
             if missing_samples > 0:
-                equals = np.where(R == q)[0]
-                samples_to_add = np.random.choice(equals, missing_samples, replace=False)
+                samples_to_add = np.where(R == q)[0]
+                if missing_samples < len(samples_to_add):
+                    samples_to_add = np.random.choice(
+                        samples_to_add, missing_samples, replace=False)
                 selection[samples_to_add] = True
         self.selected_samples.append(selection)
         self.n_update_samples.append(int(np.sum(selection)))
@@ -392,7 +394,7 @@ class CEM_Beta(CEM):
         return np.random.beta(2*dist, 2-2*dist)
 
     def pdf(self, x, dist):
-        return stats.beta.pdf(x, 2*dist, 2-2*dist)
+        return stats.beta.pdf(np.clip(x,0.001,0.999), 2*dist, 2-2*dist)
 
     def update_sample_distribution(self, samples, weights):
         w = np.array(weights)
