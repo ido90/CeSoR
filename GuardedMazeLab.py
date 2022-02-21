@@ -2,6 +2,7 @@
 
 '''
 
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -40,6 +41,9 @@ class Experiment:
         self.global_seed = global_seed
         np.random.seed(self.global_seed)
         torch.manual_seed(self.global_seed)
+        for dirname in ('models', 'outputs'):
+            if not os.path.exists(f'./{dirname}/'):
+                os.makedirs(f'./{dirname}/')
 
         self.n_train = train_episodes
         self.n_valid = valid_episodes
