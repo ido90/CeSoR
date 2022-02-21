@@ -99,6 +99,18 @@ class GuardedMaze(core.Env):
         self.rng = np.random.RandomState(seed)
         return [seed]
 
+    def one_hot_encoding(self):
+        m = np.zeros((self.rows,self.rows), dtype=float)  # i,j=0,...,n-1
+        x, y = self.state_xy  # 0.5<=x,y<=n-1.5
+        i0, j0 = self.state_xy.astype(int)  # 0<=i0,j0<=n-2
+        i1, j1 = i0+1, j0+1
+        dx, dy = i1-x, j1-y
+        m[i0,j0] = dx*dy
+        m[i0,j1] = dx*(1-dy)
+        m[i1,j0] = (1-dx)*dy
+        m[i1,j1] = (1-dx)*(1-dy)
+        return m.reshape(-1)
+
     def get_obs(self):
         if self.continuous:
             return self.state_xy
@@ -239,7 +251,7 @@ class GuardedMaze(core.Env):
     def get_local_map(self, rad=1):
         pad = max(0, rad - 1)
         n = self.rows + 2*pad
-        padded_map = np.zeros((n, n))
+        padded_map = np.ones((n, n))
         padded_map[pad:n-pad, pad:n-pad] = self.map
         x = pad + self.state_cell[0]
         y = pad + self.state_cell[1]

@@ -74,7 +74,7 @@ class NN(nn.Module):
 
 class FC(NN):
     def __init__(self, mid_sizes=None, state_dim=4, act_dim=2, lstm=False,
-                 dropout=0.0, **kwargs):
+                 head_bias=True, dropout=0.0, **kwargs):
         super(FC, self).__init__(state_dim, act_dim, **kwargs)
 
         self.lstm = lstm
@@ -91,7 +91,7 @@ class FC(NN):
         if self.drop_p:
             self.dropouts = [nn.Dropout(p=dropout).to(self.device) \
                              for _ in range(len(mid_sizes))]
-        self.head = nn.Linear(mid_sizes[-1], self.act_dim).to(self.device)
+        self.head = nn.Linear(sizes[-1], self.act_dim, bias=head_bias).to(self.device)
 
         self.h, self.c = None, None
         self.init_state()

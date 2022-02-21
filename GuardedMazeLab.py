@@ -18,7 +18,7 @@ import GuardedMaze
 import Agents, GCVaR, CEM
 import utils
 
-STATE_DIM = dict(xy=2, local_map=9, both=11, mid_map=25, mid_map_xy=27)
+STATE_DIM = dict(xy=2, local_map=9, both=11, mid_map=25, mid_map_xy=27, one_hot=8**2)
 
 class Experiment:
 
@@ -26,17 +26,17 @@ class Experiment:
 
     def __init__(self, agents=None, train_episodes=500, valid_episodes=20,
                  test_episodes=100, global_seed=0, maze_mode=1, maze_size=None,
-                 max_episode_steps=None,
+                 max_episode_steps=None, save_all_policies=False,
                  detailed_rewards=False, valid_freq=10, save_best_model=True,
                  guard_prob=0.05, guard_cost=4, rand_guard=True, rand_cost=False,
                  action_noise=0.2, max_distributed=0,
                  optimizer=optim.Adam, optim_freq=100, optim_q_ref=None,
-                 cvar=1, soft_cvar=0, optimistic_q=False, zero_loss_tolerance=10,
-                 gamma=1.0, lr=1e-2, lr_gamma=1, lr_step=0, weight_decay=0.0,
-                 state_mode='mid_map_xy', ce_warmup_turns=5,
+                 cvar=1, soft_cvar=0, optimistic_q=False, no_change_tolerance=10,
+                 gamma=1.0, lr=1e-1, lr_gamma=1, lr_step=0, weight_decay=0.0,
+                 state_mode='one_hot', ce_warmup_turns=5,
                  use_ce=False, ce_alpha=0.2, ce_ref_mode='train', ce_ref_alpha=None,
                  ce_n_orig=None, ce_w_clip=5, ce_constructor=None,
-                 log_freq=2000, T0=1, Tgamma=1, title=''):
+                 log_freq=2000, Ti=1, Tf=1, title=''):
         self.title = title
         self.global_seed = global_seed
         np.random.seed(self.global_seed)
@@ -55,11 +55,12 @@ class Experiment:
         self.state_mode = state_mode
         self.detailed_rewards = detailed_rewards
 
-        self.T0 = T0  # initial train temperature
-        self.Tgamma = Tgamma  # temperature decay
-        self.T = self.T0
+        self.Ti = Ti  # initial train temperature
+        self.Tf = Tf  # final train temperature
+        self.T = self.Ti
         self.valid_freq = valid_freq
         self.save_best_model = save_best_model
+        self.save_all_policies = save_all_policies
 
         self.guard_prob = guard_prob
         self.guard_cost = guard_cost
@@ -74,7 +75,7 @@ class Experiment:
         self.optimizer_constructor = optimizer
         self.optim_freq = optim_freq
         self.optim_q_ref = optim_q_ref
-        self.zero_loss_tolerance = zero_loss_tolerance
+        self.no_change_tolerance = no_change_tolerance
         self.cvar = cvar
         self.soft_cvar = soft_cvar
         self.optimistic_q = optimistic_q
@@ -252,6 +253,8 @@ class Experiment:
                 args['state_dim'] = self.maze_size if self.state_mode=='full' \
                     else STATE_DIM[self.state_mode]
                 args['act_dim'] = 4
+                args['mid_sizes'] = []
+                args['head_bias'] = False
                 self.agents_names.append(nm)
                 a = const(**args)
                 a.title = nm
@@ -285,20 +288,24 @@ class Experiment:
             self.generate_train_dd(title)
             self.generate_test_dd(title)
 
-    def save_agent(self, agent):
-        nm = agent.title
+    def save_agent(self, agent, nm=None, iter=False):
+        if nm is None: nm = agent.title
         if self.title:
             nm = f'{self.title}_{nm}'
+        if iter:
+            nm = f'{nm}_iter{agent.n_updates:03d}'
         agent.save(nm)
 
-    def load_agent(self, agent):
+    def load_agent(self, agent, nm=None, iter=None):
         if isinstance(agent, str):
-            nm = agent
-            agent = self.agents[nm]
+            agent = self.agents[agent]
+            if nm is None: nm = agent
         else:
-            nm = agent.title
+            if nm is None: nm = agent.title
         if self.title:
             nm = f'{self.title}_{nm}'
+        if iter is not None:
+            nm = f'{nm}_iter{iter:03d}'
         agent.load(nm)
 
     def load_agents(self, agents=None):
@@ -358,19 +365,25 @@ class Experiment:
     def get_agent_input(self, observation=None):
         if observation is None:
             observation = self.env.get_obs()
-        agent_input = observation / self.maze_size
-        if self.state_mode == 'local_map':
+        xy = observation / self.maze_size
+        if self.state_mode == 'xy':
+            agent_input = xy
+        elif self.state_mode == 'local_map':
             agent_input = self.env.get_local_map().reshape(-1)
         elif self.state_mode == 'mid_map':
             agent_input = self.env.get_local_map(rad=2).reshape(-1)
         elif self.state_mode == 'both':
             agent_input = np.concatenate((
-                agent_input, self.env.get_local_map().reshape(-1)))
+                xy, self.env.get_local_map().reshape(-1)))
         elif self.state_mode == 'mid_map_xy':
             agent_input = np.concatenate((
-                agent_input, self.env.get_local_map(rad=2).reshape(-1)))
+                xy, self.env.get_local_map(rad=2).reshape(-1)))
         elif self.state_mode == 'full':
             agent_input = self.env._im_from_state()
+        elif self.state_mode == 'one_hot':
+            agent_input = self.env.one_hot_encoding()
+        else:
+            raise ValueError(self.state_mode)
         return agent_input
 
     def run_episode(self, episode, agent, render=False, update_res=False,
@@ -531,8 +544,8 @@ class Experiment:
         weight_decay = get_value('weight_decay')
         optim_freq = get_value('optim_freq')
         optim_q_ref = get_value('optim_q_ref')
-        T0 = get_value('T0')
-        Tgamma = get_value('Tgamma')
+        Ti = get_value('Ti')
+        Tf = get_value('Tf')
         cvar = get_value('cvar')
         soft_cvar = get_value('soft_cvar')
         optimistic_q = get_value('optimistic_q')
@@ -578,8 +591,8 @@ class Experiment:
 
         if len(hparam_keys) > 0:
             warnings.warn(f'Unused hyper-params for {agent.title}: {hparam_keys}')
-        return optimizer_wrap, valid_fun, optim_q_ref, lr_scheduler, T0, Tgamma, \
-               ref_mode=='valid', ce
+        return optimizer_wrap, valid_fun, optim_q_ref, lr_scheduler, \
+               Ti, Tf, ref_mode=='valid', ce
 
     def train_agent(self, agent_nm, log_freq=None, verbose=1, **kwargs):
         if log_freq is None: log_freq = self.log_freq
@@ -589,14 +602,14 @@ class Experiment:
             agent.load(agent.pretrained_filename)
         agent.train()
 
-        optimizer_wrap, valid_fun, optim_q_ref, lr_scheduler, T0, Tgamma, \
+        optimizer_wrap, valid_fun, optim_q_ref, lr_scheduler, Ti, Tf, \
         ce_valid, ce = self.prepare_training(agent)
 
         # get episodes
         ids = np.arange(len(self.dd))[
             (self.dd.agent == agent_nm) & (self.dd.group == 'train')]
 
-        self.T = T0
+        self.T = Ti
         self.valid_scores[agent_nm] = [
             self.test(agent_nm, 'valid', update_inplace=False, temperature=0,
                       verbose=0)]
@@ -606,6 +619,8 @@ class Experiment:
         best_valid_mean = valid_mean
         if self.save_best_model:
             self.save_agent(agent)
+        if self.save_all_policies:
+            self.save_agent(agent, iter=True)
 
         for i, idx in enumerate(ids):
             # draw episode params
@@ -631,7 +646,9 @@ class Experiment:
             if optimizer_wrap.step(w, log_prob, score, ref_scores,
                                    f'models/{self.title}_{agent_nm}'):
                 agent.n_updates += 1
-                self.T *= Tgamma
+                if self.save_all_policies:
+                    self.save_agent(agent, iter=True)
+                self.T = Ti + (Tf-Ti) * i/len(ids)
                 if lr_scheduler is not None:
                     lr_scheduler.step()
                 # validation
@@ -652,20 +669,21 @@ class Experiment:
 
                 # stop if loss==0 for a while (e.g. all returns are the same...)
                 losses = optimizer_wrap.losses
-                tol = self.zero_loss_tolerance
+                tol = self.no_change_tolerance
                 if tol and tol<len(losses) and len(np.unique(losses[-tol:]))==1:
                     if verbose >= 1:
                         print(f'{agent_nm} training stopped after {i+1} episodes and '
-                              f'{tol} steps with zero loss.')
+                              f'{tol} steps with constant loss.')
                     break
 
             # log
             if log_freq > 0 and ((i + 1) % log_freq) == 0:
-                longs = self.dd[(self.dd.agent==agent_nm) &
+                paths = self.dd[(self.dd.agent==agent_nm) &
                                 (self.dd.group=='train') &
-                                (self.dd.ag_updates==agent.n_updates-1)].path == 1
+                                (self.dd.ag_updates==agent.n_updates-1)].path
                 print(f'\t[{i + 1:03d}/{len(ids):03d}, {agent_nm}] valid_mean='
-                      f'{valid_mean:.1f}\tlong_path={100*longs.mean():.1f}%\t'
+                      f'{valid_mean:.1f}\tstay/short/long={100*(paths==0).mean():.1f}'
+                      f'/{100*(paths==-1).mean():.1f}/{100*(paths==1).mean():.1f}%\t'
                       f'({time.time() - t0:.0f}s)')
 
         # load best model
@@ -736,7 +754,11 @@ class Experiment:
                 # update CE sampler
                 self.load_CEs(agent_nm)
 
-        self.enrich_results()
+        try:
+            self.enrich_results()
+        except Exception as e:
+            warnings.warn('Enrichment of optimizers and CEs data failed.')
+            print(e)
 
     @staticmethod
     def train_agent_wrapper(q, E, agent_nm, kwargs):
@@ -1138,7 +1160,10 @@ class Experiment:
         axs.labs(a0+2, 'train iteration',
                  f'{track}-path scores\nfed to optimizer [%]')
         for a in range(3):
-            plt.setp(axs[a0+a].get_legend().get_texts(), fontsize='13')
+            try:
+                plt.setp(axs[a0+a].get_legend().get_texts(), fontsize='13')
+            except:
+                pass
         plt.tight_layout()
 
         return axs
@@ -1175,36 +1200,99 @@ class Experiment:
         plt.tight_layout()
         return axs
 
-    def visualize_policies(self, agents=None, axs=None):
+    def show_train(self, agent_nm, n_iters=4, n_samp=5, iters=None,
+                   clean_plot=False, **kwargs):
+        agent = self.agents[agent_nm]
+        if iters is None:
+            dd = self.dd[(self.dd.group=='train') & (self.dd.agent==agent_nm)]
+            max_iter = dd.ag_updates.max()
+            iters = np.linspace(0, max_iter, n_iters).astype(int)
+        else:
+            n_iters = len(iters)
+
+        axs = utils.Axes(n_iters*n_samp, n_samp, (2.7, 2.7),
+                         fontsize=15, grid=False)
+        a = 0
+
+        for iter in iters:
+            self.load_agent(agent, iter=iter)
+            d = self.dd[(self.dd.group=='train') & (
+                    self.dd.agent==agent_nm) & (self.dd.ag_updates==iter)]
+            d = d.sort_values('score')
+            N = len(d)
+            qs = np.linspace(0, 1, n_samp)
+            ids = ((N-1)*qs).astype(int)
+            episodes = d.episode.values[ids]
+            scores = d.score.values[ids]
+
+            for i in range(n_samp):
+                s, T = self.show_episode((agent_nm, 'train', episodes[i]), ax=axs[a],
+                                         verbose=0, **kwargs)
+                if clean_plot or scores[i]==s:
+                    axs.labs(a, None, None, f'{agent_nm}.{iter}: R={scores[i]:.0f}')
+                    axs[a].axis('off')
+                else:
+                    axs.labs(a, None, None,
+                             f'{agent_nm}.{iter} ({ids[i]+1}/{N})'
+                             f'\nR={scores[i]:.0f} ({T} steps)'
+                             f'\nreproduced={s:.0f}')
+                a += 1
+
+        self.load_agent(agent)
+
+        plt.tight_layout()
+        return axs
+
+    def visualize_policies(self, agents=None, iters=None, axs=None):
+        load = True
+        if iters is None:
+            iters = [None]
+            load = False
         if agents is None: agents = self.agents_names
         if isinstance(agents, str): agents = [agents]
-        if axs is None: axs = utils.Axes(len(agents), len(agents), (2.7, 2.7),
-                                         fontsize=15, grid=False)
+        W = len(agents) if len(iters)==1 else len(iters)
+        if axs is None: axs = utils.Axes(len(agents)*len(iters), W,
+                                         (2.7, 2.7), fontsize=15, grid=False)
 
         env = self.env
         n = env.rows
-        for a,ag in enumerate(agents):
+        a = 0
+        for ag in agents:
             agent = self.agents[ag]
-            M = np.repeat(np.repeat(np.clip(env.map,0,1), 3, 0), 3, 1)
-            M = np.stack([np.zeros_like(M), np.zeros_like(M), M])
-            M[:, -3*2:-3*2+3, 3*2:3*2+3] = 1  # goal
-            for i in range(n):
-                for j in range(n):
-                    if env.map[i, j] < 1:
-                        env.state_cell = np.array([i, j])
-                        env.state_xy = np.array([i, j])
-                        p = agent.act(self.get_agent_input())[2].numpy().reshape(-1)
-                        i0 = 1 + 3 * i
-                        j0 = 1 + 3 * j
-                        M[:, i0, j0] = 1  # cell center
-                        M[0, i0 - 1, j0] = p[0]  # l
-                        M[1, i0 + 1, j0] = p[1]  # r
-                        M[:2, i0, j0 - 1] = p[2]  # d
-                        M[1:, i0, j0 + 1] = p[3]  # u
-            axs[a].imshow(M.T)
-            axs[a].invert_yaxis()
-            axs[a].axis('off')
-            axs.labs(a, None, None, f'{ag}')
+            for iter in iters:
+                if load:
+                    try:
+                        self.load_agent(agent, iter=iter)
+                    except:
+                        continue
+                M = np.repeat(np.repeat(np.clip(env.map,0,1), 3, 0), 3, 1)
+                M = 0.5 * np.stack(3*[M])
+                M[:, -3*2:-3*2+3, 3*2:3*2+3] = 1  # goal
+                for i in range(n):
+                    for j in range(n):
+                        if env.map[i, j] < 1:
+                            env.state_cell = np.array([i, j])
+                            env.state_xy = np.array([i, j])
+                            p = agent.act(
+                                self.get_agent_input())[2].numpy().reshape(-1)
+                            p /= np.max(p)
+                            i0 = 1 + 3 * i
+                            j0 = 1 + 3 * j
+                            M[:, i0, j0] = 1  # cell center
+                            M[1:, i0 - 1, j0] = p[0]  # l
+                            M[:2, i0 + 1, j0] = p[1]  # r
+                            M[0, i0, j0 - 1] = p[2]  # d
+                            M[1, i0, j0 + 1] = p[3]  # u
+                axs[a].imshow(M.T)
+                axs[a].invert_yaxis()
+                axs[a].axis('off')
+                tit = ag if iter is None else f'{ag}.{iter:03d}'
+                axs.labs(a, None, None, tit)
+                a += 1
+
+            if load:
+                self.load_agent(agent)
+
         plt.tight_layout()
         return axs
 
