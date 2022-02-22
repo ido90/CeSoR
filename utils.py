@@ -41,7 +41,7 @@ def quantile(x, q, w=None, is_sorted=False, estimate_underlying_quantile=False):
     w /= w[-1]
     return np.interp(q, w, x)
 
-def plot_quantiles(x, ax=None, q=None, showmeans=False, means_args=None, **kwargs):
+def plot_quantiles(x, ax=None, q=None, showmeans=True, means_args=None, **kwargs):
     if ax is None: ax = Axes(1,1)[0]
     if q is None: q = np.arange(101) / 100
     m = np.mean(x)
