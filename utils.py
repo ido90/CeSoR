@@ -52,6 +52,33 @@ def plot_quantiles(x, ax=None, q=None, showmeans=False, means_args=None, **kwarg
         ax.axhline(m, linestyle='--', color=h[0].get_color(), **means_args)
     return ax
 
+def qplot(data, y, x=None, hue=None, ax=None, **kwargs):
+    if ax is None: ax = Axes(1,1)[0]
+
+    if hue is None:
+        plot_quantiles(data[y], ax=ax, **kwargs)
+        same_samp_size = True
+        n = len(data)
+    else:
+        hue_vals = pd.unique(data[hue].values)
+        same_samp_size = len(pd.unique([(data[hue]==hv).sum()
+                                        for hv in hue_vals])) == 1
+        n = int(len(data) // len(hue_vals))
+        for hv in hue_vals:
+            d = data[data[hue]==hv]
+            lab = hv
+            if not same_samp_size:
+                lab = f'{lab} (n={len(d):d})'
+            plot_quantiles(d[y], ax=ax, label=lab, **kwargs)
+        ax.legend(fontsize=13)
+
+    xlab = 'quantile [%]'
+    if x: xlab = f'{x} {xlab}'
+    if same_samp_size: xlab = f'{xlab}\n({n:d} samples)'
+    labels(ax, xlab, y, fontsize=15)
+
+    return ax
+
 def labels(ax, xlab=None, ylab=None, title=None, fontsize=12):
     if isinstance(fontsize, int):
         fontsize = 3*[fontsize]
