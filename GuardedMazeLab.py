@@ -1126,6 +1126,7 @@ class Experiment:
 
     def analyze_exposure(self, dd, agents=None, axs=None, a0=0, track='long'):
         if agents is None: agents = self.agents_names
+        if 'agent' not in dd.columns: dd['agent'] = dd.title
         dd = dd[dd.agent.isin(agents)]
         paths = self.dd.path[(self.dd.group=='train')&
                 self.dd.agent.isin(agents)&(~self.dd.score.isna())].values
@@ -1144,13 +1145,13 @@ class Experiment:
         if axs is None: axs = utils.Axes(3, 3, (5.5,3.5), fontsize=15)
 
         sns.lineplot(data=dd, x='batch', hue='agent', y='long',
-                     ci=None, ax=axs[a0+0])
+                     hue_order=agents, ci=None, ax=axs[a0+0])
         # sns.lineplot(data=dd[dd.long], x='batch', hue='agent', y='long_fed',
         #              ci=None, ax=axs[a0+1])
         sns.lineplot(data=dd, x='batch', hue='agent', y='long_fed_w',
-                     ci=None, ax=axs[a0+1])
+                     hue_order=agents, ci=None, ax=axs[a0+1])
         sns.lineplot(data=dd[(dd.long>0)&dd.selected], x='batch', hue='agent',
-                     y='score', ci=None, ax=axs[a0+2])
+                     hue_order=agents, y='score', ci=None, ax=axs[a0+2])
 
         axs.labs(a0+0, 'train iteration', f'{track}-path episodes [%]')
         # axs.labs(a0+1, 'train iteration',
