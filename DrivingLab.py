@@ -25,13 +25,13 @@ class Experiment:
     ###############   INITIALIZATION & SETUP   ###############
 
     def __init__(self, agents=None, train_episodes=500, valid_episodes=20,
-                 test_episodes=100, global_seed=0, agent_mid_layers=(32,),
+                 test_episodes=100, global_seed=0, agent_mid_layers=(32,32),
                  max_episode_len=30, episode_len_init=None,
                  valid_freq=10, save_best_model=True, save_all_policies=False,
                  leader_probs=(0.3,0.3,0.3,0.1), max_distributed=0,
                  optimizer=optim.Adam, optim_freq=400, optim_q_ref=None,
                  cvar=1, soft_cvar=0, optimistic_q=False, no_change_tolerance=10,
-                 gamma=1.0, lr=1e-2, lr_gamma=1, lr_step=0, weight_decay=0.0,
+                 gamma=1.0, lr=3e-3, lr_gamma=1, lr_step=0, weight_decay=0.0,
                  state_mode='default', ce_warmup_turns=5,
                  use_ce=False, ce_alpha=0.2, ce_ref_mode='train', ce_ref_alpha=None,
                  ce_n_orig=None, ce_w_clip=5, ce_constructor=None,
@@ -202,7 +202,7 @@ class Experiment:
         self.dd.reset_index(drop=True, inplace=True)
         self.build_episode_map()
 
-    def set_agents(self, agents, mid_layers=(32,), generate_tables=True):
+    def set_agents(self, agents, mid_layers=(32,32), generate_tables=True):
         if not isinstance(agents, (tuple, list, dict)):
             agents = [agents]
 
@@ -213,7 +213,8 @@ class Experiment:
             for nm, (const, args) in agents.items():
                 args['state_dim'] = STATE_DIM[self.state_mode]
                 args['act_dim'] = 9
-                args['mid_sizes'] = mid_layers # TODO?
+                if 'mid_sizes' not in args:
+                    args['mid_sizes'] = mid_layers
                 self.agents_names.append(nm)
                 a = const(**args)
                 a.title = nm
@@ -1108,7 +1109,7 @@ class Experiment:
         if agents is None: agents = self.agents_names
         if isinstance(agents, str): agents = [agents]
 
-        axs = utils.Axes(4*n*len(agents), 4, (5,3), fontsize=15)
+        axs = utils.Axes(5*n*len(agents), 5, (4.5,3), fontsize=15)
         a = 0
 
         for agent in agents:
@@ -1125,26 +1126,27 @@ class Experiment:
                     (agent, 'test', episodes[i]), self.agents[agent],
                     update_res=False, verbose=0, **kwargs)
                 x, y, xl, yl = self.env.get_trajectory()
-                for j, (z,zl) in enumerate(((x,xl), (y,yl))):
-                    axs[a+j].plot(np.arange(len(z)), z, '.-', label='agent')
-                    axs[a+j].plot(np.arange(len(zl)), zl, '.-', label='leader')
+                vx, vxl = np.diff(x)/self.env.dt, np.diff(xl)/self.env.dt
+                for j, (z,zl) in enumerate(((x,xl), (y,yl), (vx,vxl))):
+                    axs[a+j].plot(np.arange(len(z)), z, '-', label='agent')
+                    axs[a+j].plot(np.arange(len(zl)), zl, '-', label='leader')
                     axs[a+j].legend(fontsize=12)
                     if clean_plot or scores[i]==s:
-                        axs.labs(a+j, 't', ['x','y'][j],
+                        axs.labs(a+j, 't', ['x','y','vx'][j],
                                  f'{agent}: score={scores[i]:.0f}')
                     else:
-                        axs.labs(a+j, 't', ['x','y'][j],
+                        axs.labs(a+j, 't', ['x','y','vx'][j],
                                  f'{agent} ({ids[i]+1}/{N})\n'
                                  f'score={scores[i]:.0f} (L={T})\n'
                                  f'reproduced={s:.0f}')
 
-                self.env.show_rewards_and_returns(axs, a+2)
+                self.env.show_rewards_and_returns(axs, a+3)
                 for j in range(2):
-                    axs[a+2+j].set_title(
+                    axs[a+3+j].set_title(
                         f'{agent} ({ids[i]+1}/{N}), score={scores[i]:.0f}',
                         fontsize=15)
 
-                a += 4
+                a += 5
 
         plt.tight_layout()
         return axs

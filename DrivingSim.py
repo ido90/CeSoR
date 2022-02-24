@@ -63,7 +63,7 @@ class DrivingSim(core.Env):
         ])
         self.permitted_leader_actions = []
         self.set_leader_actions()
-        self.agent_actions = np.array([
+        self.agent_actions_map = np.array([
             [-6, -0.01], [-6, 0.0], [-6, 0.01],
             [ 0, -0.01], [ 0, 0.0], [ 0, 0.01],
             [ 4, -0.01], [ 4, 0.0], [ 4, 0.01],
@@ -77,6 +77,7 @@ class DrivingSim(core.Env):
         self.leader_actions = []
         self.agent_state = None
         self.agent_states = []
+        self.agent_actions = []
         self.prev_acc = 0
         self.curr_acc = 0
         self.rewards = []
@@ -100,6 +101,7 @@ class DrivingSim(core.Env):
         self.generate_leader_traj(leader_actions)
         self.agent_state = self.agent_init.copy()
         self.agent_states = [self.agent_state]
+        self.agent_actions = []
         self.prev_acc = 0
         self.curr_acc = 0
         self.rewards = []
@@ -171,7 +173,8 @@ class DrivingSim(core.Env):
         return self.get_reward()
 
     def step(self, action):
-        a = self.agent_actions[action]
+        self.agent_actions.append(action)
+        a = self.agent_actions_map[action]
         tot_r = 0
         done = False
         for j in range(self.agent_action_freq):
