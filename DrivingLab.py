@@ -26,7 +26,7 @@ class Experiment:
 
     def __init__(self, agents=None, train_episodes=500, valid_episodes=20,
                  test_episodes=100, global_seed=0, agent_mid_layers=(32,32),
-                 max_episode_len=30, episode_len_init=None,
+                 max_episode_len=30, episode_len_init=None, nine_actions=False,
                  valid_freq=10, save_best_model=True, save_all_policies=False,
                  leader_probs=(0.3,0.3,0.3,0.1), max_distributed=0,
                  optimizer=optim.Adam, optim_freq=400, optim_q_ref=None,
@@ -57,6 +57,7 @@ class Experiment:
             episode_len_init = self.max_episode_len
         self.L_init = episode_len_init
         self.L = episode_len_init
+        self.nine_actions = nine_actions
         self.Ti = Ti  # initial train temperature
         self.Tf = Tf  # final train temperature
         self.T = self.Ti
@@ -116,7 +117,8 @@ class Experiment:
         gym.envs.registration.register(
             id='DrivingSim-v0',
             entry_point='DrivingSim:DrivingSim',
-            kwargs=dict(T=self.max_episode_len, leader_probs=self.leader_probs)
+            kwargs=dict(T=self.max_episode_len, leader_probs=self.leader_probs,
+                        nine_actions=self.nine_actions)
         )
 
     def make_env(self):
@@ -212,7 +214,7 @@ class Experiment:
             self.agents = {}
             for nm, (const, args) in agents.items():
                 args['state_dim'] = STATE_DIM[self.state_mode]
-                args['act_dim'] = 9
+                args['act_dim'] = 9 if self.nine_actions else 5
                 if 'mid_sizes' not in args:
                     args['mid_sizes'] = mid_layers
                 self.agents_names.append(nm)
@@ -235,7 +237,7 @@ class Experiment:
         if isinstance(agent, (tuple,list)):
             args = agent[1]
             args['state_dim'] = STATE_DIM[self.state_mode]
-            args['act_dim'] = 9
+            args['act_dim'] = 9 if self.nine_actions else 5
             agent = agent[0](**args)
         if title is None:
             title = agent.title
@@ -960,7 +962,7 @@ class Experiment:
                 est_name = f'${est_name}$'
             elif est_name.startswith('cvar'):
                 alpha = float(est_name[len('cvar'):]) / 100
-                est = lambda x: np.mean(np.sort(x)[:int(np.ceil(alpha * len(x)))])
+                est = lambda x: np.mean(-np.sort(-x)[:int(np.ceil(alpha * len(x)))])
                 est_name = f'$CVaR_{{{alpha:.2f}}}$'
             else:
                 raise ValueError(est_name)
@@ -977,17 +979,19 @@ class Experiment:
         if verify_train_success:
             agents = [ag for ag in agents if self.last_train_success[ag]]
 
-        axs = utils.Axes(8+len(train_estimators),
-                         W, axsize, fontsize=15)
+        axs = utils.Axes(3+len(train_estimators)+(len(ce_sample_data)>0)+\
+                         4*(len(ce_batch_data)>0), W, axsize, fontsize=15)
         a = 0
 
         # Train scores
+        train_valid_df['cost'] = -train_valid_df.score
         for est_name, est in train_estimators.items():
             sns.lineplot(data=train_valid_df, x='train_iteration', hue='agent',
-                         style='group', y='score', estimator=est, ax=axs[a])
+                         style='group', y='cost', estimator=est, ax=axs[a])
             axs[a].set_xlim((0,None))
+            axs[a].set_yscale('log')
             plt.setp(axs[a].get_legend().get_texts(), fontsize='13')
-            axs.labs(a, 'train iteration', f'{est_name} score')
+            axs.labs(a, 'train iteration', f'{est_name} cost')
             a += 1
 
         # Test scores

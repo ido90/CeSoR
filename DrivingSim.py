@@ -20,7 +20,8 @@ import utils
 class DrivingSim(core.Env):
     metadata = {'render.modes': ['none', 'human']}
 
-    def __init__(self, seed=None, T=None, leader_probs=(.3,.3,.3,.1)):
+    def __init__(self, seed=None, T=None, leader_probs=(.3,.3,.3,.1),
+                 nine_actions=False):
         # General
         self.rng = np.random.RandomState(seed)
         self.fps = 20
@@ -29,7 +30,7 @@ class DrivingSim(core.Env):
         self.dt = 0.1
         self.T = 30 if T is None else T
         self.leader_action_freq = 15
-        self.agent_action_freq = 10
+        self.agent_action_freq = 3
         self.reaction_delay = 7
         self.max_leader_acc = 1
         self.max_leader_dec = 3
@@ -63,11 +64,15 @@ class DrivingSim(core.Env):
         ])
         self.permitted_leader_actions = []
         self.set_leader_actions()
-        self.agent_actions_map = np.array([
-            [-6, -0.01], [-6, 0.0], [-6, 0.01],
-            [ 0, -0.01], [ 0, 0.0], [ 0, 0.01],
-            [ 4, -0.01], [ 4, 0.0], [ 4, 0.01],
-        ])
+        if nine_actions:
+            self.agent_actions_map = np.array([
+                [-6, -0.01], [-6, 0.0], [-6, 0.01],
+                [ 0, -0.01], [ 0, 0.0], [ 0, 0.01],
+                [ 4, -0.01], [ 4, 0.0], [ 4, 0.01],
+            ])
+        else:
+            self.agent_actions_map = np.array(
+                [[-6, 0.0], [ 0, -0.01], [ 0, 0.0], [ 0, 0.01], [ 4, 0.0]])
 
         # State variables
         self.i = 0
