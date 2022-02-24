@@ -93,7 +93,7 @@ class Experiment:
         self.test_episodes_params = None
         self.agents = None
         self.agents_names = None
-        self.last_train_success = {}
+        self.best_train_iteration = {}
         self.valid_scores = {}
 
         self.CEs = {}
@@ -253,7 +253,8 @@ class Experiment:
                 args['state_dim'] = self.maze_size if self.state_mode=='full' \
                     else STATE_DIM[self.state_mode]
                 args['act_dim'] = 4
-                args['mid_sizes'] = []
+                if self.state_mode == 'one_hot':
+                    args['mid_sizes'] = []
                 args['head_bias'] = False
                 self.agents_names.append(nm)
                 a = const(**args)
@@ -264,7 +265,7 @@ class Experiment:
             self.agents_names = [a.title for a in agents]
             self.agents = {a.title:a for a in agents}
 
-        self.last_train_success = {a:True for a in self.agents_names}
+        self.best_train_iteration = {a:-1 for a in self.agents_names}
 
         if generate_tables:
             self.generate_train_dd()
@@ -617,6 +618,7 @@ class Experiment:
         valid_mean = np.mean(self.valid_scores[agent_nm][-1])
         best_valid_score = valid_score
         best_valid_mean = valid_mean
+        self.best_train_iteration[agent_nm] = 0
         if self.save_best_model:
             self.save_agent(agent)
         if self.save_all_policies:
@@ -666,6 +668,7 @@ class Experiment:
                             self.save_agent(agent)
                         best_valid_score = valid_score
                         best_valid_mean = valid_mean
+                        self.best_train_iteration[agent_nm] = agent.n_updates
 
                 # stop if loss==0 for a while (e.g. all returns are the same...)
                 losses = optimizer_wrap.losses
@@ -740,7 +743,7 @@ class Experiment:
 
             # merge results
             for agent_nm, d in zip(names, dd):
-                self.last_train_success[agent_nm] = d[0]
+                self.best_train_iteration[agent_nm] = d[0]
                 self.dd[(self.dd.agent == agent_nm) & (self.dd.group == 'train')] = d[1]
                 self.valid_scores[agent_nm] = d[2]
 
@@ -767,14 +770,14 @@ class Experiment:
             E.train_agent(agent_nm, **kwargs)
         except:
             q.put((agent_nm, (
-                False,
+                -1,
                 E.dd[(E.dd.agent==agent_nm)&(E.dd.group=='train')],
                 E.valid_scores[agent_nm],
             )))
             print(f'Error in {agent_nm}.')
             raise
         q.put((agent_nm, (
-            True,
+            E.best_train_iteration[agent_nm],
             E.dd[(E.dd.agent == agent_nm) & (E.dd.group == 'train')],
             E.valid_scores[agent_nm],
         )))
@@ -1032,7 +1035,7 @@ class Experiment:
         train_valid_df, test_df, opt_batch_data, opt_sample_data, \
         ce_batch_data, ce_sample_data = self.analysis_preprocessing(agents)
         if verify_train_success:
-            agents = [ag for ag in agents if self.last_train_success[ag]]
+            agents = [ag for ag in agents if self.best_train_iteration[ag]>=0]
 
         axs = utils.Axes(14+len(train_estimators)+self.rand_cost,
                          W, axsize, fontsize=15)
@@ -1048,13 +1051,15 @@ class Experiment:
             a += 1
 
         # Test scores
+        n_iters = self.n_train // self.optim_freq
         cvar = lambda x, alpha: np.mean(np.sort(x)[:int(np.ceil(alpha*len(x)))])
         for agent in agents:
             scores = test_df.score[test_df.agent==agent].values
             utils.plot_quantiles(
                 scores, q=np.arange(Q+1)/100, showmeans=True, ax=axs[a],
                 label=f'{agent} ({np.mean(scores):.1f})')
-            print(f'{agent}:\tmean={np.mean(scores):.1f}\t'
+            print(f'{agent} ({self.best_train_iteration[agent]}/{n_iters}):\t'
+                  f'mean={np.mean(scores):.1f}\t'
                   f'CVaR10={cvar(scores,0.1):.1f}\tCVaR05={cvar(scores,0.05):.1f}')
         axs[a].set_xlim((0,Q))
         axs.labs(a, 'episode quantile [%]', 'score')
