@@ -163,7 +163,8 @@ class DrivingSim(core.Env):
 
     def check_status_and_get_reward(self):
         y = self.agent_state[1]
-        if y<-self.max_deviation or y>self.max_deviation:
+        dx = self.agent_state[0] - self.leader_states[self.i,0]
+        if y<-self.max_deviation or y>self.max_deviation or dx>self.max_deviation:
             self.collision = True
             return np.sum([self.get_reward(i) for i in
                            range(self.i, int(np.ceil(self.T/self.dt)))])

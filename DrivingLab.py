@@ -26,7 +26,7 @@ class Experiment:
 
     def __init__(self, agents=None, train_episodes=500, valid_episodes=20,
                  test_episodes=100, global_seed=0, agent_mid_layers=(32,),
-                 max_episode_len=None, episode_len_init=None,
+                 max_episode_len=30, episode_len_init=None,
                  valid_freq=10, save_best_model=True, save_all_policies=False,
                  leader_probs=(0.3,0.3,0.3,0.1), max_distributed=0,
                  optimizer=optim.Adam, optim_freq=400, optim_q_ref=None,
