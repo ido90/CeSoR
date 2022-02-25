@@ -31,13 +31,13 @@ class DrivingSim(core.Env):
         self.dt = 0.1
         self.T = 30 if T is None else T
         self.leader_action_freq = 15
-        self.agent_action_freq = 3
+        self.agent_action_freq = 5
         self.reaction_delay = 7
         self.max_leader_acc = 1
         self.max_leader_dec = 3
         self.min_leader_speed = 20
         self.leader_init = np.array((10., 40., 2., 0., 0.))  # x,vx,y,vy,ay
-        self.agent_init = np.array((0., 2., 40., 0., 0.))  # x,y,v,theta,delta
+        self.agent_init = np.array((0., 2., 40., 0.))  # x,y,v,theta
         self.leader_probs = leader_probs
         self.l = 3.476
         self.lag = -2.5
@@ -65,15 +65,16 @@ class DrivingSim(core.Env):
         ])
         self.permitted_leader_actions = []
         self.set_leader_actions()
+        turn_power = 1.3949651087641681
         if nine_actions:
             self.agent_actions_map = np.array([
-                [-6, -0.01], [-6, 0.0], [-6, 0.01],
-                [ 0, -0.01], [ 0, 0.0], [ 0, 0.01],
-                [ 4, -0.01], [ 4, 0.0], [ 4, 0.01],
+                [-6, -turn_power], [-6, 0.0], [-6, turn_power],
+                [ 0, -turn_power], [ 0, 0.0], [ 0, turn_power],
+                [ 4, -turn_power], [ 4, 0.0], [ 4, turn_power],
             ])
         else:
             self.agent_actions_map = np.array(
-                [[-6, 0.0], [ 0, -0.01], [ 0, 0.0], [ 0, 0.01], [ 4, 0.0]])
+                [[-6, 0.0], [ 0, -turn_power], [ 0, 0.0], [ 0, turn_power], [ 4, 0.0]])
 
         # State variables
         self.i = 0
@@ -184,13 +185,15 @@ class DrivingSim(core.Env):
         tot_r = 0
         done = False
         for j in range(self.agent_action_freq):
-            x,y,v,th,delta = self.agent_state
+            x,y,v,th = self.agent_state
+            v_mean = v + 0.5 * self.dt * a[0]
+            a1_scaled = np.arctan(a[1]/v)
+            th_mean = th - 0.5 * self.dt * v/self.l * np.tan(a1_scaled)
             self.agent_state = np.array([
-                x + self.dt * v * np.cos(th),
-                y + self.dt * v * np.sin(th),
+                x + self.dt * v_mean * np.cos(th_mean),
+                y + self.dt * v_mean * np.sin(th_mean),
                 v + self.dt * a[0],
-                th - self.dt * v/self.l * np.tan(delta),
-                delta + self.dt * a[1]
+                th - self.dt * v_mean/self.l * np.tan(a1_scaled),
             ])
             self.agent_states.append(self.agent_state)
 
@@ -383,8 +386,8 @@ class DrivingSim(core.Env):
     def get_features(self):
         # raw state
         # leader: x,vx,y,vy,ay
-        # agent:  x,y,v,theta,delta
-        x,y,v,th,delta, xl,vxl,yl,vyl,ayl = self.get_obs()
+        # agent:  x,y,v,theta
+        x,y,v,th, xl,vxl,yl,vyl,ayl = self.get_obs()
 
         # features
         dx = x - xl
@@ -393,7 +396,7 @@ class DrivingSim(core.Env):
         dy = y - yl
 
         # normalized features
-        return np.array([dx, dvx, ax, dy, y, 10*th, 100*delta])
+        return np.array([dx, dvx, ax, dy, y, 10*th])
 
     def show_frame(self, i=None, ax=None, show_info=True):
         if i is None: i = self.i
