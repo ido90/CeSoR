@@ -395,7 +395,7 @@ class DrivingSim(core.Env):
         # normalized features
         return np.array([dx, dvx, ax, dy, y, 10*th, 100*delta])
 
-    def show_frame(self, i=None, ax=None, remove_ticks=True, show_time=True):
+    def show_frame(self, i=None, ax=None, show_info=True):
         if i is None: i = self.i
         if ax is None: ax = utils.Axes(1, 1, (4,3.5))[0]
 
@@ -415,23 +415,24 @@ class DrivingSim(core.Env):
         d = max(d, 5*self.l)
 
         # plot road
-        l = self.l/2
+        l = 2*self.l
         l2 = 2*l
         for y in (-4,0,4):
             lane0 = l2*((x0-d)//l2)
             for j in range(int(np.ceil((2*d)/l2))):
-                ax.plot([y,y], [lane0+j*l2, lane0+j*l2+l], 'k--', linewidth=1.2)
+                ax.plot([y,y], [lane0+j*l2, lane0+j*l2+l], 'k-', linewidth=1.2)
 
         ax.set_ylim((x0-d, x0+d))
         ax.set_xlim((-d, d))
 
         # figure design
         ax.grid(False)
-        if remove_ticks:
-            ax.set_xticks([])
-            ax.set_yticks([])
-        if show_time:
-            ax.set_title(f't={self.dt*i:.1f}', fontsize=14)
+        ax.set_xticks([])
+        ax.set_yticks([x, xl])
+        if show_info:
+            ax.set_yticklabels([f'$\Delta$={int(np.round(xl-x)):02d}m', ''], fontsize=13,
+                               rotation=90, verticalalignment='bottom')
+            ax.set_title(f't={self.dt*i:.1f}s', fontsize=14)
         ax.legend(fontsize=12, loc='upper left')
 
         return ax
