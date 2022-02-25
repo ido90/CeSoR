@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from gym import core, spaces
 from gym.utils import seeding
 import time
+import imageio
 import utils
 
 
@@ -47,7 +48,7 @@ class DrivingSim(core.Env):
         # Constants
         self.observation_space = spaces.Box(
             low=np.float32(-1e6), high=np.float32(1e6), shape=(10,), dtype=np.float32)
-        self.action_space = spaces.Discrete(9)
+        self.action_space = spaces.Discrete(9 if nine_actions else 5)
         self.leader_dynamics = np.array([
             [1., self.dt, 0., 0., 0.],  # x = x + dt*vx
             [0., 1., 0., 0., 0.],       # vx = vx
@@ -315,12 +316,13 @@ class DrivingSim(core.Env):
 
         return 0
 
-    def get_both_cars(self):
-        xl, vxl, yl, vyl = self.leader_states[self.i, :4]
+    def get_both_cars(self, i=None):
+        if i is None: i = self.i
+        xl, vxl, yl, vyl = self.leader_states[i, :4]
         thl = np.arctan2(vyl, vxl)
         pl = self.get_car_points(xl, yl, thl)
 
-        x, y, _, th = self.agent_state[:4]
+        x, y, _, th = self.agent_states[i][:4]
         p = self.get_car_points(x, y, th)
 
         return pl, p
@@ -392,3 +394,58 @@ class DrivingSim(core.Env):
 
         # normalized features
         return np.array([dx, dvx, ax, dy, y, 10*th, 100*delta])
+
+    def show_frame(self, i=None, ax=None, remove_ticks=True, show_time=True):
+        if i is None: i = self.i
+        if ax is None: ax = utils.Axes(1, 1, (4,3.5))[0]
+
+        # get cars
+        pl, p = self.get_both_cars(i)
+        xl, vxl, yl, vyl = self.leader_states[i, :4]
+        x, y, v, th = self.agent_states[i][:4]
+
+        # plot cars
+        # TODO add nice cars images and maybe background
+        ax.plot(pl[1,:], pl[0,:], 'r.-', linewidth=2, label='leader')
+        ax.plot(p[1,:], p[0,:], 'b.-', linewidth=2, label='agent')
+
+        # focus and scale camera
+        x0 = 0.5 * (x + xl)
+        d = 1.2 * max(np.abs(x-xl)/2, np.abs(y-yl))
+        d = max(d, 5*self.l)
+
+        # plot road
+        l = self.l/2
+        l2 = 2*l
+        for y in (-4,0,4):
+            lane0 = l2*((x0-d)//l2)
+            for j in range(int(np.ceil((2*d)/l2))):
+                ax.plot([y,y], [lane0+j*l2, lane0+j*l2+l], 'k--', linewidth=1.2)
+
+        ax.set_ylim((x0-d, x0+d))
+        ax.set_xlim((-d, d))
+
+        # figure design
+        ax.grid(False)
+        if remove_ticks:
+            ax.set_xticks([])
+            ax.set_yticks([])
+        if show_time:
+            ax.set_title(f't={self.dt*i:.1f}', fontsize=14)
+        ax.legend(fontsize=12, loc='upper left')
+
+        return ax
+
+    def create_gif(self, frames=None, ax=None, ff=3, frame_freq=1,
+                   outname='outputs/demo.gif', tmpname='outputs/tmp.png'):
+        if ax is None: ax = utils.Axes(1, 1, (3.8, 3.5))[0]
+        if frames is None:
+            frames = []
+            for i in range(self.i):
+                if (i % frame_freq) == 0:
+                    ax.clear()
+                    self.show_frame(i, ax)
+                    plt.savefig(tmpname)
+                    frames.append(imageio.imread(tmpname))
+        imageio.mimsave(outname, frames, duration=self.dt/ff)
+        return frames
