@@ -4,8 +4,9 @@ https://rss2017.lids.mit.edu/static/papers/62.pdf
 https://arxiv.org/pdf/1711.10055.pdf
 https://github.com/StanfordASL/RSIRL
 
-The agent controls a car that follows another car, and should keep as close as possible
-without collision. The leader acts randomly and independently of the follower.
+The agent controls a car that follows another car, and should keep
+as close as possible without collision. The leader acts randomly and
+independently of the follower.
 
 Written by Ido Greenberg, 2022
 '''
@@ -15,7 +16,6 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from gym import core, spaces
 from gym.utils import seeding
-import time
 import imageio
 from PIL import Image
 import utils
@@ -28,7 +28,6 @@ class DrivingSim(core.Env):
                  rewards_conf=None, nine_actions=False, reaction_delay=7):
         # General
         self.rng = np.random.RandomState(seed)
-        self.fps = 20
 
         # Configuration
         self.dt = 0.1
@@ -56,7 +55,8 @@ class DrivingSim(core.Env):
 
         # Constants
         self.observation_space = spaces.Box(
-            low=np.float32(-1e6), high=np.float32(1e6), shape=(10,), dtype=np.float32)
+            low=np.float32(-1e6), high=np.float32(1e6),
+            shape=(10,), dtype=np.float32)
         self.action_space = spaces.Discrete(9 if nine_actions else 5)
         self.leader_dynamics = np.array([
             [1., self.dt, 0., 0., 0.],  # x = x + dt*vx
@@ -83,7 +83,7 @@ class DrivingSim(core.Env):
             ])
         else:
             self.agent_actions_map = np.array(
-                [[-6, 0.0], [ 0, -turn_power], [ 0, 0.0], [ 0, turn_power], [ 4, 0.0]])
+                [[-6, 0], [0, -turn_power], [0, 0], [0, turn_power], [4, 0]])
 
         # State variables
         self.i = 0
@@ -304,43 +304,7 @@ class DrivingSim(core.Env):
 
         self.leader_states, self.leader_actions = np.stack(traj), actions
 
-    def render(self, mode='human', close=False, ax=None):
-        if mode == 'none':
-            return 0
-
-        xl, vxl, yl, vyl = self.leader_states[self.i, :4]
-        thl = np.arctan2(vyl, vxl)
-        pl = self.get_car_points(xl, yl, thl)
-
-        x, y, _, th = self.agent_state[:4]
-        p = self.get_car_points(x, y, th)
-
-        # plot
-        if self.plots:
-            self.plots[0].set_xdata(pl[0,:])
-            self.plots[0].set_ydata(pl[1,:])
-            self.plots[1].set_xdata(p[0,:])
-            self.plots[1].set_ydata(p[1,:])
-        else:
-            if ax is not None:
-                self.ax = ax
-            elif self.ax is None:
-                self.ax = utils.Axes(1, 1, (4,3.5))[0]
-            self.plots.append(self.ax.plot(
-                pl[0,:], pl[1,:], 'r.-', linewidth=2, label='leader')[0])
-            self.plots.append(self.ax.plot(
-                p[0,:], p[1,:], 'b.-', linewidth=2, label='agent')[0])
-            self.ax.legend()
-
-        d = 1.1 * max(np.abs(x-xl), np.abs(y-yl))
-        d = max(d, 5*self.l)
-        self.ax.set_xlim((xl-d, xl+d))
-        self.ax.set_ylim((yl-d, yl+d))
-
-        plt.draw()
-        if self.fps:
-            time.sleep(1/self.fps)
-
+    def render(self, mode='human'):
         return 0
 
     def get_both_cars(self, i=None):
@@ -357,7 +321,8 @@ class DrivingSim(core.Env):
     def get_car_points(self, x, y, theta):
         dx, dy = self.l/2, self.l/4
         p = np.array([[-dx,dy],[dx,dy],[dx,-dy],[-dx,-dy]]).T
-        R = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
+        R = np.array([[np.cos(theta), -np.sin(theta)],
+                      [np.sin(theta), np.cos(theta)]])
         p = np.dot(R, p)
         p[0, :] += x
         p[1, :] += y
@@ -457,8 +422,9 @@ class DrivingSim(core.Env):
         ax.set_xticks([])
         ax.set_yticks([x, xl])
         if show_info:
-            ax.set_yticklabels([f'$\Delta$={int(np.round(xl-x)):02d}m', ''], fontsize=13,
-                               rotation=90, verticalalignment='bottom')
+            ax.set_yticklabels([f'$\Delta$={int(np.round(xl-x)):02d}m', ''],
+                               fontsize=13, rotation=90,
+                               verticalalignment='bottom')
             ax.set_title(f't={self.dt*i:.1f}s', fontsize=14)
         ax.legend(fontsize=12, loc='upper left')
 
