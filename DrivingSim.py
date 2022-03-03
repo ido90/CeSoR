@@ -1,5 +1,6 @@
 '''
 Driving simulator based on:
+https://rss2017.lids.mit.edu/static/papers/62.pdf
 https://arxiv.org/pdf/1711.10055.pdf
 https://github.com/StanfordASL/RSIRL
 
@@ -10,19 +11,21 @@ Written by Ido Greenberg, 2022
 '''
 
 import numpy as np
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 from gym import core, spaces
 from gym.utils import seeding
 import time
 import imageio
+from PIL import Image
 import utils
 
 
 class DrivingSim(core.Env):
     metadata = {'render.modes': ['none', 'human']}
 
-    def __init__(self, seed=None, T=None, leader_probs=(.3,.3,.3,.1),
-                 nine_actions=False):
+    def __init__(self, seed=None, T=None, leader_probs=(.3,.3,.3,.0,.1), p_oil=0,
+                 rewards_conf=None, nine_actions=False, reaction_delay=7):
         # General
         self.rng = np.random.RandomState(seed)
         self.fps = 20
@@ -32,17 +35,23 @@ class DrivingSim(core.Env):
         self.T = 30 if T is None else T
         self.leader_action_freq = 15
         self.agent_action_freq = 5
-        self.reaction_delay = 7
+        self.reaction_delay = reaction_delay
         self.max_leader_acc = 1
-        self.max_leader_dec = 3
+        self.max_leader_dec = 2
+        self.leader_hard_brake_dec = 6
         self.min_leader_speed = 20
-        self.leader_init = np.array((10., 40., 2., 0., 0.))  # x,vx,y,vy,ay
-        self.agent_init = np.array((0., 2., 40., 0.))  # x,y,v,theta
+        self.leader_init = np.array((0., 40., 2., 0., 0.))  # x,vx,y,vy,ay
+        self.agent_init = np.array((-10., 2., 40., 0.))  # x,y,v,theta
         self.leader_probs = leader_probs
+        self.p_oil = p_oil
+        self.oil_factor = 2
         self.l = 3.476
         self.lag = -2.5
-        # self.collision_cost = 1000
-        # self.max_distance_cost = 10
+        if rewards_conf is None:
+            # collision, forward, backward, speed, acc, lane, road
+            # original values: (-,   1., 0.05, 0.1,    1., 0.1, 0.5)
+            rewards_conf =     (5., 0.5, 0.05, 0.1, 0.03, 0.5, 0.5)
+        self.rconf = rewards_conf
         self.max_deviation = 10
 
         # Constants
@@ -65,7 +74,7 @@ class DrivingSim(core.Env):
         ])
         self.permitted_leader_actions = []
         self.set_leader_actions()
-        turn_power = 1.3949651087641681
+        turn_power = 0.03486
         if nine_actions:
             self.agent_actions_map = np.array([
                 [-6, -turn_power], [-6, 0.0], [-6, turn_power],
@@ -79,7 +88,8 @@ class DrivingSim(core.Env):
         # State variables
         self.i = 0
         self.t = 0
-        self.collision = False
+        self.state_of_no_return = False
+        self.oil = None
         self.leader_states = None
         self.leader_actions = []
         self.agent_state = None
@@ -94,19 +104,31 @@ class DrivingSim(core.Env):
         self.ax = None
         self.plots = []
 
-    def reset(self, probs=None, leader_actions=None, L=None):
+    def reset(self, probs=None, leader_actions=None, L=None, init_state=None,
+              p_oil=None, oil=None, seed=None):
+        if seed is not None:
+            self.rng.seed(seed)
+
         # conf
         if L is not None:
             self.T = L
         if probs is not None:
             self.leader_probs = probs
+        if p_oil is not None:
+            self.p_oil = p_oil
+        if self.p_oil and oil is None:
+            oil = [self.rng.random()<self.p_oil for _ in range(
+                int(np.ceil(self.T/self.dt/self.leader_action_freq)))]
+        self.oil = oil
 
         # init
         self.i = 0
         self.t = 0
-        self.collision = False
+        self.state_of_no_return = False
         self.generate_leader_traj(leader_actions)
         self.agent_state = self.agent_init.copy()
+        if init_state is not None:
+            self.agent_state += init_state
         self.agent_states = [self.agent_state]
         self.agent_actions = []
         self.prev_acc = 0
@@ -139,55 +161,49 @@ class DrivingSim(core.Env):
         dvx = self.agent_state[2]*np.cos(self.agent_state[3]) - \
               self.leader_states[i,1]
 
+        rc = self.rconf
+        # accident
+        collision = np.abs(dx)<self.l and np.abs(dy)<(self.l/2)
+        r0 = collision * rc[0]
         # stay behind leader
-        r1 = (dx>self.lag) * (np.log(1+np.exp(1.*(dx-self.lag))) - log2)
+        r1 = (dx>self.lag) * (np.log(1+np.exp(rc[1]*(dx-self.lag))) - log2 + 1.)
         # don't stay too far behind
-        r2 = (dx<self.lag) * (np.log(1+np.exp(0.05*(self.lag-dx))) - log2)
+        r2 = (dx<self.lag) * (np.log(1+np.exp(rc[2]*(self.lag-dx))) - log2)
         # keep similar speed
-        r3 = np.log(1+np.exp(0.1*np.abs(dvx))) - log2
+        r3 = np.log(1+np.exp(rc[3]*np.abs(dvx))) - log2
         # keep smooth acceleration
-        # original const: 0.1
-        r4 = 0.2 * (self.curr_acc-self.prev_acc)**2 # TODO consider decreasing
+        r4 = rc[4] * (self.curr_acc-self.prev_acc)**2
         # stay in the same lane
-        r5 = np.log(1+np.exp(0.1*np.abs(dy))) - log2
+        r5 = np.log(1+np.exp(rc[5]*np.abs(dy))) - log2
         # stay on road
-        r6 = (y> 2) * (np.log(1+np.exp( 0.5*(y-2))) - log2) + \
-             (y<-2) * (np.log(1+np.exp(-0.5*(y+2))) - log2)
+        r6 = (y> 2) * (np.log(1+np.exp( rc[6]*(y-2))) - log2) + \
+             (y<-2) * (np.log(1+np.exp(-rc[6]*(y+2))) - log2)
 
-        r = -np.array((r1,r2,r3,r4,r5,r6))
+        r = -np.array((r0,r1,r2,r3,r4,r5,r6))
         self.full_rewards.append(r)
         return np.sum(r)
-
-        # self.collision = self.is_collision()
-        # if self.collision:
-        #     return -self.collision_cost
-        #
-        # d = np.linalg.norm(self.agent_state[:2]-self.leader_states[self.i,[0,2]])
-        # d = np.clip(d/self.l, 0, self.max_distance_cost)
-        # return -d # TODO is collision really captured?
-
-    # def is_collision(self):
-    #     d = np.linalg.norm(self.agent_state[:2]-self.leader_states[self.i,[0,2]])
-    #     return d < self.l/2
 
     def check_status_and_get_reward(self):
         y = self.agent_state[1]
         dx = self.agent_state[0] - self.leader_states[self.i,0]
         if y<-self.max_deviation or y>self.max_deviation or dx>self.max_deviation:
-            self.collision = True
+            self.state_of_no_return = True
             return np.sum([self.get_reward(i) for i in
                            range(self.i, int(np.ceil(self.T/self.dt)))])
         return self.get_reward()
 
     def step(self, action):
         self.agent_actions.append(action)
-        a = self.agent_actions_map[action]
+        a = self.agent_actions_map[action].copy()
+        if self.oil is not None and self.oil[int(
+                self.i//self.leader_action_freq)]:
+            a[0] /= self.oil_factor
         tot_r = 0
         done = False
         for j in range(self.agent_action_freq):
             x,y,v,th = self.agent_state
             v_mean = v + 0.5 * self.dt * a[0]
-            a1_scaled = np.arctan(a[1]/v)
+            a1_scaled = a[1]*(40/v)**2
             th_mean = th - 0.5 * self.dt * v/self.l * np.tan(a1_scaled)
             self.agent_state = np.array([
                 x + self.dt * v_mean * np.cos(th_mean),
@@ -207,7 +223,7 @@ class DrivingSim(core.Env):
             self.rewards.append(reward)
             tot_r += reward
 
-            done = self.collision or time_ended
+            done = self.state_of_no_return or time_ended
             if done:
                 break
 
@@ -217,8 +233,10 @@ class DrivingSim(core.Env):
         turn = 4/3 * np.array((44.117, 25.21, 9.211, -3.878, -14.05,
                                -21.33, -25.69, -27.14, -25.69, -21.33,
                                -14.05, -3.878, 9.211, 25.21, 44.117))
+        K = self.leader_action_freq
         a = self.max_leader_acc
         d = self.max_leader_dec
+        dh = self.leader_hard_brake_dec
         T = self.leader_action_freq
         T2 = T/2
         if len(turn) != T:
@@ -227,15 +245,28 @@ class DrivingSim(core.Env):
             turn = utils.quantile(turn, np.arange(0, 1+h/2, h))
 
         self.permitted_leader_actions = [
-            lambda t: np.array([0, 0]),  # do nothing
-            lambda t: np.array([a*t/T2 if t<T2 else a*(1-(t-T2)/(T-T2)), 0]),  # acc
-            lambda t: np.array([-d*t/T2 if t<T2 else -d*(1-(t-T2)/(T-T2)), 0]),  # dec
-            lambda t: np.array([0, -turn[t]]),  # turn left
-            lambda t: np.array([0, turn[t]]),  # turn right
+            [np.array([0, 0]) for t in range(K)],  # do nothing
+            [np.array([a*t/T2 if t<T2 else a*(1-(t-T2)/(T-T2)), 0])
+             for t in range(K)],  # acc
+            [np.array([-d*t/T2 if t<T2 else -d*(1-(t-T2)/(T-T2)), 0])
+             for t in range(K)],  # dec
+            [np.array([-dh*t/T2 if t<T2 else -dh*(1-(t-T2)/(T-T2)), 0])
+             for t in range(K)],  # hard brake
+            [np.array([0, -turn[t]]) for t in range(K)],  # turn left
+            [np.array([0, turn[t]]) for t in range(K)],  # turn right
         ]
 
-    def generate_leader_traj(self, leader_actions=None):
+    def init_leader(self, dvx_scale=3):
         s = self.leader_init.copy()
+        # random speed
+        s[1] = self.rng.normal(s[1], dvx_scale)
+        # random lane
+        if self.rng.random() < 0.5:
+            s[3] = -s[3]
+        return s
+
+    def generate_leader_traj(self, leader_actions=None):
+        s = self.init_leader()
         on_left = False
         traj = [s]
         actions = []
@@ -248,13 +279,13 @@ class DrivingSim(core.Env):
                 j = 1
             else:
                 if leader_actions is None:
-                    j = self.rng.choice(np.arange(4), p=self.leader_probs)
+                    j = self.rng.choice(np.arange(5), p=self.leader_probs)
                 else:
                     j = leader_actions[i]
-                if j==3:
+                if j==4:
                     # turn
                     if on_left:
-                        j = 4
+                        j = 5
                     on_left = not on_left
 
             action_fun = self.permitted_leader_actions[j]
@@ -262,7 +293,7 @@ class DrivingSim(core.Env):
 
             # update states interval
             for k in range(self.leader_action_freq):
-                action = action_fun(k)
+                action = action_fun[k]
                 s = np.dot(self.leader_dynamics, s) + np.dot(
                     self.leader_control, action)
                 traj.append(s)
@@ -305,13 +336,6 @@ class DrivingSim(core.Env):
         d = max(d, 5*self.l)
         self.ax.set_xlim((xl-d, xl+d))
         self.ax.set_ylim((yl-d, yl+d))
-
-        # #Need both of these in order to rescale
-        # self.ax.relim()
-        # self.ax.autoscale_view()
-        # #We need to draw *and* flush
-        # self.figure.canvas.draw()
-        # self.figure.canvas.flush_events()
 
         plt.draw()
         if self.fps:
@@ -368,9 +392,9 @@ class DrivingSim(core.Env):
         r = np.array(self.full_rewards)
         if accumulated:
             r = np.cumsum(r, axis=0)
-        labs = ('stay_behind', 'stay close', 'similar speed',
+        labs = ('no collision', 'stay behind', 'stay close', 'similar speed',
                 'smooth accel', 'same lane', 'on road')
-        for i in range(6):
+        for i in range(len(labs)):
             ax.plot(r[:,i], label=labs[i])
         utils.labels(ax, 't', 'return' if accumulated else 'reward', fontsize=15)
         ax.legend(fontsize=13)
@@ -383,47 +407,47 @@ class DrivingSim(core.Env):
         plt.tight_layout()
         return axs
 
-    def get_features(self):
-        # raw state
-        # leader: x,vx,y,vy,ay
-        # agent:  x,y,v,theta
-        x,y,v,th, xl,vxl,yl,vyl,ayl = self.get_obs()
-
-        # features
-        dx = x - xl
-        dvx = v*np.cos(th) - vxl
-        ax = self.curr_acc
-        dy = y - yl
-
-        # normalized features
-        return np.array([dx, dvx, ax, dy, y, 10*th])
-
     def show_frame(self, i=None, ax=None, show_info=True):
         if i is None: i = self.i
         if ax is None: ax = utils.Axes(1, 1, (4,3.5))[0]
 
         # get cars
-        pl, p = self.get_both_cars(i)
         xl, vxl, yl, vyl = self.leader_states[i, :4]
+        thl = np.arctan2(vyl, vxl)
         x, y, v, th = self.agent_states[i][:4]
 
         # plot cars
-        # TODO add nice cars images and maybe background
-        ax.plot(pl[1,:], pl[0,:], 'r.-', linewidth=2, label='leader')
-        ax.plot(p[1,:], p[0,:], 'b.-', linewidth=2, label='agent')
+        ax.plot([yl], [xl], 'r.-', label='leader')
+        ax.plot([y], [x], 'b.-', label='agent')
+
+        l = 0.45*self.l
+        img = Image.open('images/car1.png').rotate(-180/np.pi*thl)
+        ax.imshow(img, extent=(yl-l/2,yl+l/2,xl-l,xl+l), zorder=3)
+        img = Image.open('images/car2.png').rotate(-180/np.pi*th)
+        ax.imshow(img, extent=(y-l,y+l,x-l,x+l), zorder=3)
 
         # focus and scale camera
         x0 = 0.5 * (x + xl)
         d = 1.2 * max(np.abs(x-xl)/2, np.abs(y-yl))
-        d = max(d, 5*self.l)
+        d = max(d, 3.5*self.l)
 
         # plot road
-        l = 2*self.l
+        H = 2*d
+        y0 = x0 - d
+        road = mpl.patches.Rectangle((-4, y0), 8, H, color='gray')
+        marg1 = mpl.patches.Rectangle((-5, y0), 1, H, color='tomato')
+        marg2 = mpl.patches.Rectangle((4, y0), 1, H, color='tomato')
+        ax.set_facecolor('palegreen')
+        ax.add_patch(road)
+        ax.add_patch(marg1)
+        ax.add_patch(marg2)
+
+        l = 1.5*self.l
         l2 = 2*l
-        for y in (-4,0,4):
+        for y in (0,):
             lane0 = l2*((x0-d)//l2)
             for j in range(int(np.ceil((2*d)/l2))):
-                ax.plot([y,y], [lane0+j*l2, lane0+j*l2+l], 'k-', linewidth=1.2)
+                ax.plot([y,y], [lane0+j*l2, lane0+j*l2+l], 'w-', linewidth=3)
 
         ax.set_ylim((x0-d, x0+d))
         ax.set_xlim((-d, d))
@@ -453,3 +477,18 @@ class DrivingSim(core.Env):
                     frames.append(imageio.imread(tmpname))
         imageio.mimsave(outname, frames, duration=self.dt/ff)
         return frames
+
+    def get_features(self):
+        # raw state
+        # leader: x,vx,y,vy,ay
+        # agent:  x,y,v,theta
+        x,y,v,th, xl,vxl,yl,vyl,ayl = self.get_obs()
+
+        # features
+        dx = x - xl
+        dvx = v*np.cos(th) - vxl
+        ax = self.curr_acc
+        dy = y - yl
+
+        # normalized features (to scale ~2)
+        return np.array([dx/5, dvx/2, ax/2, dy/2, y, 10*th])
