@@ -143,7 +143,7 @@ class DrivingSim(core.Env):
         return self.leader_probs, self.get_obs()
 
     def seed(self, seed=None):
-        self.np_random, seed = seeding.np_random(seed)
+        seed = seeding.np_random(seed)[1]
         self.rng = np.random.RandomState(seed)
         return [seed]
 
@@ -245,7 +245,7 @@ class DrivingSim(core.Env):
             turn = utils.quantile(turn, np.arange(0, 1+h/2, h))
 
         self.permitted_leader_actions = [
-            [np.array([0, 0]) for t in range(K)],  # do nothing
+            [np.array([0, 0]) for _ in range(K)],  # do nothing
             [np.array([a*t/T2 if t<T2 else a*(1-(t-T2)/(T-T2)), 0])
              for t in range(K)],  # acc
             [np.array([-d*t/T2 if t<T2 else -d*(1-(t-T2)/(T-T2)), 0])
