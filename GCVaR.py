@@ -9,7 +9,8 @@ import utils
 class GCVaR:
     def __init__(self, optimizer, batch_size, alpha=1, scheduler=None,
                  alpha1_normalizer=np.mean, skip_steps=0, check_nans=True,
-                 optimistic_q=False, detailed_records=True, title='GCVaR'):
+                 optimistic_q=False, detailed_records=True, lr_sched=None,
+                 title='GCVaR'):
         # Configuration
         self.title = title
         self.o = optimizer  # torch optimizer
@@ -24,6 +25,7 @@ class GCVaR:
         self.skip_steps = skip_steps
         self.optimistic_q = optimistic_q
         self.detailed_records = detailed_records
+        self.lr_scheduler = lr_sched
         self.check_nans = check_nans
 
         # State
@@ -203,6 +205,8 @@ class GCVaR:
         if self.batch_count >= self.skip_steps:
             self.lr.append(self.o.param_groups[0]['lr'])
             self.o.step()
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
         else:
             self.lr.append(0)
 
@@ -279,7 +283,7 @@ class GCVaR:
 def alpha_scheduler(iter, alpha, soft_cvar=0, n_iters=1, skip_iters=0,
                     resolution=0):
     if soft_cvar:
-        ni = skip_iters
+        ni = max((1-soft_cvar) * n_iters, skip_iters)
         nf = soft_cvar * n_iters
         if iter < ni:
             return 1
