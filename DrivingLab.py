@@ -4,6 +4,7 @@
 
 import os
 import numpy as np
+from scipy import stats
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
@@ -18,24 +19,25 @@ import DrivingSim
 import Agents, GCVaR, CEM
 import utils
 
-STATE_DIM = dict(default=7)
+STATE_DIM = dict(default=6)
 
 class Experiment:
 
     ###############   INITIALIZATION & SETUP   ###############
 
-    def __init__(self, agents=None, train_episodes=500, valid_episodes=20,
-                 test_episodes=100, global_seed=0, agent_mid_layers=(32,32),
-                 max_episode_len=30, episode_len_init=None, nine_actions=False,
+    def __init__(self, agents=None, train_episodes=100000, valid_episodes=200,
+                 test_episodes=1000, global_seed=0, agent_mid_layers=(32,),
+                 max_episode_len=30, episode_len_init=3, nine_actions=False,
+                 p_oil=0, rewards_conf=None,
                  valid_freq=10, save_best_model=True, save_all_policies=False,
-                 leader_probs=(0.3,0.3,0.3,0.1), max_distributed=0,
+                 leader_probs=(0.35,0.3,0.248,0.002,0.1), max_distributed=0,
                  optimizer=optim.Adam, optim_freq=400, optim_q_ref=None,
                  cvar=1, soft_cvar=0, optimistic_q=False, no_change_tolerance=10,
-                 gamma=1.0, lr=3e-3, lr_gamma=1, lr_step=0, weight_decay=0.0,
-                 state_mode='default', ce_warmup_turns=5,
+                 gamma=1.0, lr=2e-2, lr_gamma=0.5, lr_step=100, weight_decay=0,
+                 state_mode='default', ce_warmup_turns=0,
                  use_ce=False, ce_alpha=0.2, ce_ref_mode='train', ce_ref_alpha=None,
                  ce_n_orig=None, ce_w_clip=5, ce_constructor=None,
-                 log_freq=2000, Ti=1, Tf=1, title=''):
+                 log_freq=4000, Ti=1, Tf=1, title=''):
         self.title = title
         self.global_seed = global_seed
         np.random.seed(self.global_seed)
@@ -51,13 +53,16 @@ class Experiment:
         self.state_mode = state_mode
 
         self.leader_probs = leader_probs
-        self.dist = np.concatenate((leader_probs, [np.ceil(self.max_episode_len/1.5)]))
+        self.dist = np.concatenate((
+            [p_oil, 10., 0., 0.3], leader_probs,
+            [np.ceil(self.max_episode_len/1.5)]))
 
         if episode_len_init is None:
             episode_len_init = self.max_episode_len
         self.L_init = episode_len_init
         self.L = episode_len_init
         self.nine_actions = nine_actions
+        self.rewards_conf = rewards_conf
         self.Ti = Ti  # initial train temperature
         self.Tf = Tf  # final train temperature
         self.T = self.Ti
@@ -73,7 +78,7 @@ class Experiment:
         self.cvar = cvar
         self.soft_cvar = soft_cvar
         self.optimistic_q = optimistic_q
-        self.gamma = gamma # note: 0.98^100=13%, 0.99^200=13%
+        self.gamma = gamma
         self.lr = lr
         self.lr_step = lr_step
         self.lr_gamma = lr_gamma
@@ -89,10 +94,14 @@ class Experiment:
         self.agents_names = None
         self.best_train_iteration = {}
         self.valid_scores = {}
+        self.test_actions = {}
+        self.test_dx = {}
+        self.test_dvx = {}
+        self.test_dy = {}
 
         self.CEs = {}
         if ce_constructor is None:
-            ce_constructor = CEM_Prob
+            ce_constructor = CEM_Driving
         self.ce_constructor = ce_constructor
         if ce_n_orig is None:
             ce_n_orig = int(0.2*self.optim_freq) if ce_ref_mode=='train' else 0
@@ -118,6 +127,7 @@ class Experiment:
             id='DrivingSim-v0',
             entry_point='DrivingSim:DrivingSim',
             kwargs=dict(T=self.max_episode_len, leader_probs=self.leader_probs,
+                        p_oil=self.dist[0], rewards_conf=self.rewards_conf,
                         nine_actions=self.nine_actions)
         )
 
@@ -125,8 +135,9 @@ class Experiment:
         self.register_env()
         self.env = gym.make('DrivingSim-v0')
 
-    def init_dd(self, n=1, agent='', group='', episode0=0, ag_updates=-1, ag_hash='',
-                temperature=0, L=None, inplace=True, reset=False, update_map=True):
+    def init_dd(self, n=1, agent='', group='', episode0=0, ag_updates=-1,
+                ag_hash='', temperature=0, L=None, inplace=True, reset=False,
+                update_map=True):
         if L is None: L = self.max_episode_len
         dd = pd.DataFrame(dict(
             agent          = (n * [agent]) if isinstance(agent, str) else agent,
@@ -138,7 +149,14 @@ class Experiment:
             p_0            = n * [np.nan],
             p_acc          = n * [np.nan],
             p_dec          = n * [np.nan],
+            p_hard         = n * [np.nan],
             p_turn         = n * [np.nan],
+            x0             = n * [np.nan],
+            y0             = n * [np.nan],
+            v0             = n * [np.nan],
+            th0            = n * [np.nan],
+            brakes         = n * [np.nan],
+            oil            = n * [np.nan],
             L              = n * [L],
             log_prob       = n * [np.nan],
             ret_loss       = n * [np.nan],
@@ -155,7 +173,8 @@ class Experiment:
         return dd
 
     def build_episode_map(self):
-        get_key = lambda i: (self.dd.agent[i], self.dd.group[i], self.dd.episode[i])
+        get_key = lambda i: (
+            self.dd.agent[i], self.dd.group[i], self.dd.episode[i])
         self.episode_map = {get_key(i):i for i in range(len(self.dd))}
 
     def draw_episode_params(self, dyn_dist=None, seed=None):
@@ -171,7 +190,8 @@ class Experiment:
         for i in range(n):
             d = self.draw_episode_params()
             dynamics.append(d)
-        self.test_episodes_params = np.array(dynamics)
+            states.append(Experiment.get_init_state(seed=i))
+        self.test_episodes_params = np.array(dynamics), np.array(states)
 
     def generate_train_dd(self, agents_names=None):
         if agents_names is None: agents_names = self.agents_names
@@ -195,7 +215,8 @@ class Experiment:
             group=self.n_valid * ['valid'] + self.n_test * ['test'],
             inplace=False
         )
-        dd_base.iloc[:,6:10] = self.test_episodes_params
+        dd_base.iloc[:,6:11] = self.test_episodes_params[0]
+        dd_base.iloc[:,11:15] = self.test_episodes_params[1]
 
         for agent_nm in agents_names:
             dd = dd_base.copy()
@@ -259,8 +280,8 @@ class Experiment:
 
     def load_agent(self, agent, nm=None, iter=None):
         if isinstance(agent, str):
-            agent = self.agents[agent]
             if nm is None: nm = agent
+            agent = self.agents[agent]
         else:
             if nm is None: nm = agent.title
         if self.title:
@@ -274,23 +295,30 @@ class Experiment:
         for agent in agents:
             self.load_agent(agent)
 
-    def load_optimizers(self, agents):
+    def load_optimizers(self, agents=None):
+        if agents is None: agents = self.agents_names
         if isinstance(agents, str): agents = [agents]
         for agent_nm in agents:
             filename = f'models/{self.title}_{agent_nm}'
             if agent_nm not in self.optimizers:
-                self.optimizers[agent_nm] = GCVaR.GCVaR(None, 0)
+                constructor = GCVaR.GCVaR
+                hp = self.agents[agent_nm].train_hparams
+                if 'nonepisodic_loss' in hp and hp['nonepisodic_loss']:
+                    raise ValueError(
+                        'Non-episodic loss is currently not supported.')
+                self.optimizers[agent_nm] = constructor(None, 0)
                 try:
                     self.optimizers[agent_nm].load(filename)
                 except:
                     print(f'Cannot load optimizer: {filename}.opt')
 
-    def load_CEs(self, agents):
+    def load_CEs(self, agents=None):
+        if agents is None: agents = self.agents_names
         if isinstance(agents, str): agents = [agents]
         for agent_nm in agents:
             filename = f'models/{self.title}_{agent_nm}'
             if agent_nm not in self.CEs:
-                self.CEs[agent_nm] = self.ce_constructor(self.dist)
+                self.CEs[agent_nm] = self.ce_constructor(dist=self.dist)
             hp = self.agents[agent_nm].train_hparams
             if self.ce_update_freq or (
                     hp is not None and 'ce_update_freq' in hp and
@@ -302,9 +330,36 @@ class Experiment:
 
     ###############   RUN ENV   ###############
 
-    def init_episode(self, episode, leader_actions=None, L=None, update=False):
+    @staticmethod
+    def get_init_state(seed=None, dx_scale=10, dv_shift=0, dv_scale=3,
+                       mid_ratio=0.3, l=3.476):
+        rng = np.random.RandomState(seed)
+        # location
+        x = 10 - 4*l - rng.exponential(dx_scale)
+        # speed
+        v = rng.normal(dv_shift, dv_scale)
+        # lane
+        y, th = -2, 0
+        if rng.random() >= mid_ratio:
+            # choose lane
+            if rng.random() < 0.5:
+                y = -4
+            else:
+                y = 0
+        else:
+            # choose tilt
+            if rng.random() < 0.5:
+                th = -0.2007 * 40/(40+v)
+            else:
+                th = 0.2007 * 40/(40+v)
+
+        return np.array((x,y,v,th))
+
+    def init_episode(self, episode, leader_actions=None, oil=None, L=None):
         # get params if already known
-        dyn = self.dd.iloc[episode, 6:10].values.astype(np.float)
+        seed = self.dd.episode.values[episode]
+        dyn = self.dd.iloc[episode, 6:11].values.astype(np.float)
+        s0 = self.dd.iloc[episode, 11:15].values.astype(np.float)
         if np.any(np.isnan(dyn)):
             dyn = None
         if L is None:
@@ -312,12 +367,8 @@ class Experiment:
 
         # reset env with params
         out_dyn, out_s0 = self.env.reset(
-            dyn, leader_actions=leader_actions, L=L)
-
-        # save params if were not set before
-        if update:
-            if dyn is None:
-                self.dd.iloc[episode, 6:10] = out_dyn
+            dyn, leader_actions=leader_actions, oil=oil, L=L,
+            init_state=s0, seed=seed)
 
         return out_s0
 
@@ -331,10 +382,12 @@ class Experiment:
         return agent_input
 
     def run_episode(self, episode, agent, render=False, leader_actions=None,
-                    update_res=False, temperature=None, L=None, verbose=0,
-                    ax=None, **kwargs):
+                    oil=None, update_res=False, temperature=None, L=None,
+                    verbose=0, ax=None, gif=False, **kwargs):
         if isinstance(episode, (tuple, list)):
             episode = self.episode_map[tuple(episode)]
+        if isinstance(agent, str):
+            agent = self.agents[agent]
         if temperature is None:
             temperature = self.dd.ag_temperature[episode]
         if L is None:
@@ -357,7 +410,7 @@ class Experiment:
         try:
             # initialize
             observation = self.init_episode(
-                episode, leader_actions=leader_actions, L=L, update=update_res)
+                episode, leader_actions=leader_actions, oil=oil, L=L)
 
             # run episode
             for i in range(int(self.env.T//self.env.dt)):
@@ -378,6 +431,8 @@ class Experiment:
 
             # summarize results
             T = len(rewards)
+            n_brakes = np.sum(np.array(self.env.leader_actions)==3)
+            n_oil = np.sum(self.env.oil)
             score = np.sum(rewards)
             returns = np.zeros(T)
             returns[T-1] = rewards[-1]
@@ -391,6 +446,8 @@ class Experiment:
                 self.dd.loc[episode,'ag_updates'] = agent.n_updates
                 self.dd.loc[episode,'ag_hash'] = agent.get_params_hash()
                 self.dd.loc[episode,'ag_temperature'] = temperature
+                self.dd.loc[episode,'brakes'] = n_brakes
+                self.dd.loc[episode,'oil'] = n_oil
                 self.dd.loc[episode,'log_prob'] = log_prob.item()
                 self.dd.loc[episode,'ret_loss'] = ret_loss.item()
                 self.dd.loc[episode,'score'] = score
@@ -401,9 +458,13 @@ class Experiment:
             self.env.close()
             raise
 
+        if gif:
+            i_ep = self.dd.episode.values[episode]
+            self.env.create_gif(
+                outname=f'outputs/{self.title}_{agent.title}_{i_ep}.gif')
         if render:
-            self.env.close()
             self.env.show_trajectory(ax=ax)
+            self.env.close()
 
         return score, log_prob, ret_loss, T
 
@@ -437,8 +498,7 @@ class Experiment:
 
         agent.eval()
         score, _, _, T = self.run_episode(
-            idx, agent, render=True, update_res=False,
-            verbose=verbose-1, **kwargs)
+            idx, agent, render=True, verbose=verbose-1, **kwargs)
         agent.train()
         return score, T
 
@@ -463,11 +523,13 @@ class Experiment:
 
     def draw_train_episode_params(self, idx, ce=None):
         if ce is None: ce = self.CEs[self.dd.agent[idx]]
-        traj, w = ce.sample()
-        self.dd.iloc[idx, 6:10] = ce.sample_dist[-1][:-1]
+        (oil, s0, traj), w = ce.sample()
+        self.dd.iloc[idx, 6:11] = ce.sample_dist[-1][4:-1]
+        self.dd.iloc[idx, 11:15] = s0
+        self.dd.loc[idx, 'oil'] = np.sum(oil)
         self.dd.loc[idx, 'ag_temperature'] = self.T
         self.dd.loc[idx, 'L'] = self.L
-        return traj, w
+        return traj, oil, w
 
     def prepare_training(self, agent=None):
         hparam_keys = {}
@@ -490,6 +552,7 @@ class Experiment:
         cvar = get_value('cvar')
         soft_cvar = get_value('soft_cvar')
         optimistic_q = get_value('optimistic_q')
+        L_init = get_value('L_init')
 
         # get CE hparams
         update_freq = get_value('ce_update_freq')
@@ -510,20 +573,19 @@ class Experiment:
         cvar_scheduler = (soft_cvar, n_iters)
         optimizer = optimizer_constructor(
             agent.parameters(), lr=lr, weight_decay=weight_decay)
-        optimizer_wrap = GCVaR.GCVaR(
-            optimizer, optim_freq, cvar, cvar_scheduler,
-            skip_steps=ce_warmup_turns, optimistic_q=optimistic_q, title=agent.title)
-        self.optimizers[agent.title] = optimizer_wrap
-
         lr_scheduler = None
         if self.lr_step:
             lr_scheduler = torch.optim.lr_scheduler.StepLR(
                 optimizer, step_size=self.lr_step, gamma=self.lr_gamma)
+        optimizer_wrap = GCVaR.GCVaR(
+            optimizer, optim_freq, cvar, cvar_scheduler, skip_steps=ce_warmup_turns,
+            optimistic_q=optimistic_q, lr_sched=lr_scheduler, title=agent.title)
+        self.optimizers[agent.title] = optimizer_wrap
 
         # prepare CE
         if ref_alpha is None: ref_alpha = cvar
         ce = self.ce_constructor(
-            self.dist,
+            dist=self.dist, l=self.env.l,
             batch_size=int(update_freq * optim_freq), w_clip=w_clip,
             ref_mode=ref_mode, ref_alpha=ref_alpha,
             n_orig_per_batch=n_orig, internal_alpha=internal_alpha,
@@ -532,27 +594,35 @@ class Experiment:
 
         if len(hparam_keys) > 0:
             warnings.warn(f'Unused hyper-params for {agent.title}: {hparam_keys}')
-        return optimizer_wrap, valid_fun, optim_q_ref, lr_scheduler, \
-               Ti, Tf, ref_mode=='valid', ce
+        return optimizer_wrap, valid_fun, optim_q_ref, \
+               Ti, Tf, ref_mode=='valid', ce, L_init
+
+    def train_log(self, agent, i_episode, tot_episodes, valid_mean, t0):
+        # brake,left,nothing,right,gas -> nothing/brake/gas/left/right
+        acts = 100*self.test_actions[agent]
+        print(f'\t[{i_episode:03d}/{tot_episodes:03d}, {agent}] valid_mean='
+              f'{valid_mean:.0f}\tactions: {acts[2]:.0f}/{acts[0]:.0f}/'
+              f'{acts[4]:.0f}/{acts[1]:.0f}/{acts[3]:.0f}%\t'
+              f'({time.time() - t0:.0f}s)')
 
     def train_agent(self, agent_nm, log_freq=None, verbose=1, **kwargs):
         if log_freq is None: log_freq = self.log_freq
         t0 = time.time()
         agent = self.agents[agent_nm]
         if agent.pretrained_filename is not None:
-            agent.load(agent.pretrained_filename)
+            self.load_agent(agent, agent.pretrained_filename)
         agent.train()
 
-        optimizer_wrap, valid_fun, optim_q_ref, lr_scheduler, Ti, Tf, \
-        ce_valid, ce = self.prepare_training(agent)
+        optimizer_wrap, valid_fun, optim_q_ref, Ti, Tf, \
+        ce_valid, ce, L_init = self.prepare_training(agent)
 
         # get episodes
         ids = np.arange(len(self.dd))[
             (self.dd.agent == agent_nm) & (self.dd.group == 'train')]
 
         self.T = Ti
-        self.L = int(self.L_init)
-        ce.original_dist[-1] = np.ceil(self.L / 1.5)
+        self.L = int(L_init)
+        ce.original_dist[-1] = np.ceil(self.L/1.5)
         ce.sample_dist[-1][-1] = np.ceil(self.L/1.5)
         self.valid_scores[agent_nm] = [
             self.test(agent_nm, 'valid', update_inplace=False, temperature=0,
@@ -569,11 +639,11 @@ class Experiment:
 
         for i, idx in enumerate(ids):
             # draw episode params
-            traj, w = self.draw_train_episode_params(idx, ce)
+            traj, oil, w = self.draw_train_episode_params(idx, ce)
 
             # run episode
             score, log_prob, ret_loss, n_steps = self.run_episode(
-                idx, agent, leader_actions=traj, update_res=True,
+                idx, agent, leader_actions=traj, oil=oil, update_res=True,
                 temperature=self.T, L=self.L, **kwargs)
 
             # update CEM
@@ -595,12 +665,10 @@ class Experiment:
                 if self.save_all_policies:
                     self.save_agent(agent, iter=True)
                 self.T = Ti + (Tf-Ti) * i/len(ids)
-                self.L = int(self.L_init + (self.max_episode_len-self.L_init) * min(
-                    i, len(ids)/2) / (len(ids)/2) )
-                ce.original_dist[-1] = np.ceil(self.L / 1.5)
+                self.L = int(L_init + (self.max_episode_len-L_init) * min(
+                    1.*i, 0.8*len(ids)) / (0.8*len(ids)) )
+                ce.original_dist[-1] = np.ceil(self.L/1.5)
                 ce.sample_dist[-1][-1] = np.ceil(self.L/1.5)
-                if lr_scheduler is not None:
-                    lr_scheduler.step()
 
                 # validation
                 if (agent.n_updates % self.valid_freq) == 0:
@@ -624,14 +692,13 @@ class Experiment:
                 tol = self.no_change_tolerance
                 if tol and tol<len(losses) and len(np.unique(losses[-tol:]))==1:
                     if verbose >= 1:
-                        print(f'{agent_nm} training stopped after {i+1} episodes and '
-                              f'{tol} steps with constant loss.')
+                        print(f'{agent_nm} training stopped after {i+1} episodes'
+                              f'and {tol} steps with constant loss.')
                     break
 
             # log
-            if log_freq > 0 and ((i + 1) % log_freq) == 0:
-                print(f'\t[{i + 1:03d}/{len(ids):03d}, {agent_nm}] valid_mean='
-                      f'{valid_mean:.1f}\t({time.time() - t0:.0f}s)')
+            if log_freq > 0 and (i % log_freq) == 0:
+                self.train_log(agent_nm, i, len(ids), valid_mean, t0)
 
         # load best model
         if self.save_best_model:
@@ -688,7 +755,8 @@ class Experiment:
             # merge results
             for agent_nm, d in zip(names, dd):
                 self.best_train_iteration[agent_nm] = d[0]
-                self.dd[(self.dd.agent == agent_nm) & (self.dd.group == 'train')] = d[1]
+                self.dd[(self.dd.agent == agent_nm) & (
+                        self.dd.group == 'train')] = d[1]
                 self.valid_scores[agent_nm] = d[2]
 
                 # update agent
@@ -794,6 +862,10 @@ class Experiment:
         # merge results
         for agent_nm, d in zip(names, dd):
             self.dd[(self.dd.agent == agent_nm) & (self.dd.group == group)] = d[0]
+            self.test_actions[agent_nm] = d[1]
+            self.test_dx[agent_nm] = d[2]
+            self.test_dvx[agent_nm] = d[3]
+            self.test_dy[agent_nm] = d[4]
 
         return {a: s for a, s in zip(names,scores)}
 
@@ -802,10 +874,22 @@ class Experiment:
         try:
             scores = E.test(agent_nm, group=group, **kwargs)
         except:
-            q.put((agent_nm, (E.dd[(E.dd.agent==agent_nm)&(E.dd.group==group)],), []))
+            q.put((agent_nm, (
+                E.dd[(E.dd.agent==agent_nm)&(E.dd.group==group)],
+                E.test_actions[agent_nm],
+                E.test_dx[agent_nm],
+                E.test_dvx[agent_nm],
+                E.test_dy[agent_nm],
+            ), []))
             print(f'Error in {agent_nm}.')
             raise
-        q.put((agent_nm, (E.dd[(E.dd.agent == agent_nm) & (E.dd.group == group)],), scores))
+        q.put((agent_nm, (
+            E.dd[(E.dd.agent == agent_nm) & (E.dd.group == group)],
+            E.test_actions[agent_nm],
+            E.test_dx[agent_nm],
+            E.test_dvx[agent_nm],
+            E.test_dy[agent_nm],
+        ), scores))
 
     def test(self, agent_nm=None, group='test', update_inplace=True, temperature=0,
              verbose=1, **kwargs):
@@ -815,6 +899,11 @@ class Experiment:
                 verbose=verbose, **kwargs)
 
         t0 = time.time()
+        n_actions = self.env.action_space.n
+        self.test_actions[agent_nm] = np.zeros(n_actions)
+        self.test_dx[agent_nm] = []
+        self.test_dvx[agent_nm] = []
+        self.test_dy[agent_nm] = []
         scores = []
         dd = self.dd[(self.dd.agent==agent_nm) & (self.dd.group==group)]
         if len(dd) == 0:
@@ -826,8 +915,21 @@ class Experiment:
             score = self.run_episode(
                 idx, agent, update_res=update_inplace, temperature=temperature,
                 verbose=verbose-2, **kwargs)[0]
+            # save episode results
             scores.append(score)
+            x_ag, y_ag, x_l, y_l = self.env.get_trajectory()
+            T = min(len(x_ag), len(x_l))
+            dx = x_ag[:T] - x_l[:T]
+            dvx = np.diff(x_ag[:T]) - np.diff(x_l[:T])
+            dy = y_ag[:T] - y_l[:T]
+            self.test_dx[agent_nm].append(dx-self.env.l)
+            self.test_dvx[agent_nm].append(dvx)
+            self.test_dy[agent_nm].append(dy)
+            acts = np.array(self.env.agent_actions)
+            self.test_actions[agent_nm] += np.array([
+                np.mean(acts==i) for i in range(n_actions)])
         agent.train()
+        self.test_actions[agent_nm] /= len(dd)
 
         if verbose >= 1:
             print(f'{agent_nm:s} tested ({time.time()-t0:.0f}s).')
@@ -854,12 +956,14 @@ class Experiment:
             for col in cols:
                 self.dd[col] = np.nan
             for ag in self.CEs:
-                c1, c2 = self.CEs[ag].get_data()
-                if len(c2):
-                    ids = (self.dd.agent==ag) & (self.dd.group=='train') & \
-                          (~self.dd.score.isna())
-                    for k,v in cols.items():
-                        self.dd.loc[ids, k] = c2[v].values
+                ce = self.CEs[ag]
+                if ce.batch_count > 0:
+                    c1, c2 = ce.get_data()
+                    if len(c2):
+                        ids = (self.dd.agent==ag) & (self.dd.group=='train') & \
+                              (~self.dd.score.isna())
+                        for k,v in cols.items():
+                            self.dd.loc[ids, k] = c2[v].values
 
     def save_results(self, fname=None, agents=False, optimizers=False, CEs=False):
         if fname is None: fname=f'outputs/{self.title}'
@@ -898,8 +1002,12 @@ class Experiment:
 
         valid_df = pd.DataFrame()
         for agent in agents:
-            # valid_scores[agent][iteration][episode]=score
-            valid_scores = self.valid_scores[agent]
+            try:
+                # valid_scores[agent][iteration][episode]=score
+                valid_scores = self.valid_scores[agent]
+            except:
+                warnings.warn(f'No validation data for {agent}.')
+                continue
             valid_df = pd.concat((valid_df, pd.DataFrame(dict(
                 agent=agent,
                 group='valid',
@@ -914,6 +1022,15 @@ class Experiment:
             train_valid_df.agent,train_valid_df.group)]
 
         test_df = self.dd[(self.dd.group=='test') & (self.dd.agent.isin(agents))]
+
+        # actions record
+        actions = pd.DataFrame()
+        for ag in agents:
+            actions = pd.concat((actions, pd.DataFrame(dict(
+                agent=ag,
+                action=['brake','left','nothing','right','gas'],
+                p=100*self.test_actions[ag],
+            ))))
 
         # optimizer data
         opt_batch_data, opt_sample_data = pd.DataFrame(), pd.DataFrame()
@@ -930,10 +1047,13 @@ class Experiment:
         # CE data
         ce_batch_data, ce_sample_data = pd.DataFrame(), pd.DataFrame()
         for ag in agents:
-            ce = self.CEs[ag]
-            if not ce.batch_size:
+            try:
+                ce = self.CEs[ag]
+                if not ce.batch_size:
+                    continue
+                d1, d2 = ce.get_data()
+            except:
                 continue
-            d1, d2 = ce.get_data()
             ce_batch_data = pd.concat((ce_batch_data, d1))
             ce_sample_data = pd.concat((ce_sample_data, d2))
         if len(ce_batch_data) > 0:
@@ -944,11 +1064,12 @@ class Experiment:
 
         train_valid_df.reset_index(drop=True, inplace=True)
         test_df.reset_index(drop=True, inplace=True)
+        actions.reset_index(drop=True, inplace=True)
         opt_batch_data.reset_index(drop=True, inplace=True)
         opt_sample_data.reset_index(drop=True, inplace=True)
 
-        return train_valid_df, test_df, opt_batch_data, opt_sample_data, \
-               ce_batch_data, ce_sample_data
+        return train_valid_df, test_df, actions,\
+               opt_batch_data, opt_sample_data, ce_batch_data, ce_sample_data
 
     def build_estimators(self, est_names):
         if isinstance(est_names, dict):
@@ -972,53 +1093,79 @@ class Experiment:
 
         return ests
 
-    def analyze(self, agents=None, W=3, axsize=(6,4), Q=100,
-                train_estimators=('mean','cvar05'), verify_train_success=False):
+    def analyze(self, agents=None, W=3, axsize=(6,4), Qs=(100,5),
+                train_estimators=('mean','cvar05','cvar01'),
+                verify_train_success=False):
         if agents is None: agents = self.agents_names
         train_estimators = self.build_estimators(train_estimators)
-        train_valid_df, test_df, opt_batch_data, opt_sample_data, \
+        train_valid_df, test_df, actions, opt_batch_data, opt_sample_data, \
         ce_batch_data, ce_sample_data = self.analysis_preprocessing(agents)
         if verify_train_success:
             agents = [ag for ag in agents if self.best_train_iteration[ag]>=0]
 
-        axs = utils.Axes(3+len(train_estimators)+(len(ce_sample_data)>0)+\
-                         4*(len(ce_batch_data)>0), W, axsize, fontsize=15)
+        axs = utils.Axes(6+2*len(train_estimators)+len(Qs)+(len(ce_sample_data)>0)+\
+                         9*(len(ce_batch_data)>0)+(len(actions)>0),
+                         W, axsize, fontsize=15)
         a = 0
 
         # Train scores
         train_valid_df['cost'] = -train_valid_df.score
-        for est_name, est in train_estimators.items():
-            sns.lineplot(data=train_valid_df, x='train_iteration', hue='agent',
-                         style='group', y='cost', estimator=est, ax=axs[a])
-            axs[a].set_xlim((0,None))
-            axs[a].set_yscale('log')
-            plt.setp(axs[a].get_legend().get_texts(), fontsize='13')
-            axs.labs(a, 'train iteration', f'{est_name} cost')
-            a += 1
+        for group in ('train','valid'):
+            for est_name, est in train_estimators.items():
+                sns.lineplot(data=train_valid_df[train_valid_df.group==group],
+                             x='train_iteration', hue='agent', y='cost',
+                             estimator=est, ax=axs[a],
+                             ci=None if group=='train' else 95)
+                axs[a].set_xlim((0,None))
+                axs[a].set_yscale('log')
+                lg = axs[a].get_legend()
+                if lg is not None:
+                    plt.setp(lg.get_texts(), fontsize='13')
+                axs.labs(a, 'train iteration', f'{est_name} cost', f'{group} data')
+                if group == 'valid':
+                    axs[a].set_ylim((None,2000))
+                a += 1
 
         # Test scores
         n_iters = self.n_train // self.optim_freq
         cvar = lambda x, alpha: np.mean(np.sort(x)[:int(np.ceil(alpha*len(x)))])
         for agent in agents:
             scores = test_df.score[test_df.agent==agent].values
-            utils.plot_quantiles(
-                scores, q=np.arange(Q+1)/100, showmeans=True, ax=axs[a],
-                label=f'{agent} ({np.mean(scores):.1f})')
             print(f'{agent} ({self.best_train_iteration[agent]}/{n_iters}):\t'
                   f'mean={np.mean(scores):.1f}\t'
-                  f'CVaR10={cvar(scores,0.1):.1f}\tCVaR05={cvar(scores,0.05):.1f}')
-        axs[a].set_xlim((0,Q))
-        axs.labs(a, 'episode quantile [%]', 'score')
+                  f'CVaR05={cvar(scores,0.05):.1f}\tCVaR01={cvar(scores,0.01):.1f}')
+        for Q in Qs:
+            for agent in agents:
+                scores = test_df.score[test_df.agent==agent].values
+                utils.plot_quantiles(
+                    scores, q=np.linspace(0,Q/100,101), showmeans=True, ax=axs[a],
+                    label=f'{agent} ({np.mean(scores):.1f})')
+            axs[a].set_xlim((0,Q))
+            axs.labs(a, 'episode quantile [%]', 'score')
+            axs[a].legend(fontsize=13)
+            a += 1
+
+        # Scores per number of hard brakes
+        sns.boxplot(data=test_df, x='brakes', hue='agent', y='score',
+                    showmeans=True, ax=axs[a])
+        axs.labs(a, 'emergency brakes in episode', 'score')
         axs[a].legend(fontsize=13)
         a += 1
 
-        # Optimizer: sample sizes and weights
-        # if len(opt_sample_data) > 0:
-        #     self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a+0, track='stay')
-        #     self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a+3, track='short')
-        #     self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a+6, track='long')
-        #     a += 9
+        # Agent behavior analysis
+        self.analyze_behavior(agents, axs, a)
+        a += 3
 
+        # Agent actions distribution
+        if len(actions) > 0:
+            sns.barplot(data=actions, x='action', hue='agent', y='p', ax=axs[a])
+            axs.labs(a, 'action', 'action frequency [%]')
+            axs[a].legend(fontsize=13)
+            time.sleep(0.1)
+            axs[a].set_xticklabels(axs[a].get_xticklabels(), fontsize=13)
+            a += 1
+
+        # Optimizer: sample sizes and weights
         filter_trivial_agents = False
         if filter_trivial_agents:
             keep_agents = [ag for ag in agents if np.any(
@@ -1052,72 +1199,84 @@ class Experiment:
             a += 1
 
         if len(ce_batch_data) > 0:
-            ynms = self.dd.columns[6:10]
-            ylabs = ('do-nothing', 'accelerate', 'deccelerate', 'turn')
-            for i in range(4):
+            ynms = self.dd.columns[6:11]
+            ylabs = ('do-nothing', 'accelerate', 'deccelerate', 'emergency brake',
+                     'turn')
+            for i in range(len(ylabs)):
                 axs[a].axhline(100*self.leader_probs[i], color='k', label='original')
                 for agent in agents:
-                    y = 100 * ce_batch_data[ynms[i]][ce_batch_data.agent==agent].values
+                    y = 100 * ce_batch_data[ynms[i]][
+                        ce_batch_data.agent==agent].values
                     if np.any(y!=100*self.leader_probs[i]):
-                        axs[a].plot(np.arange(len(y)), y, '.-', label=agent)
-                axs[a].set_ylim((0, 100))
+                        axs[a].plot(np.arange(len(y)), y, '-', label=agent)
+                if ylabs[i] == 'emergency brake':
+                    axs[a].set_ylim((0, None))
+                else:
+                    axs[a].set_ylim((0, 100))
                 axs.labs(a, 'train iteration', f'{ylabs[i]} probability [%]')
                 axs[a].legend(fontsize=13)
                 a += 1
 
+            for i, lab in enumerate(('x0','v0')):
+                axs[a].axhline(self.dist[1+i], color='k', label='original')
+                for agent in agents:
+                    y = ce_batch_data[lab][ce_batch_data.agent==agent].values
+                    if np.any(y!=self.dist[1+i]):
+                        axs[a].plot(np.arange(len(y)), y, '-', label=agent)
+                axs.labs(a, 'train iteration', f'average {lab}')
+                axs[a].legend(fontsize=13)
+                a += 1
+
+            axs[a].axhline(100*self.dist[1+2], color='k', label='original')
+            for agent in agents:
+                y = 100 * ce_batch_data['mid'][ce_batch_data.agent==agent].values
+                if np.any(y!=100*self.dist[1+2]):
+                    axs[a].plot(np.arange(len(y)), y, '-', label=agent)
+            axs.labs(a, 'train iteration', f'mid-lane probability [%]')
+            axs[a].legend(fontsize=13)
+            a += 1
+
+            axs[a].axhline(100*self.dist[0], color='k', label='original')
+            for agent in agents:
+                y = 100 * ce_batch_data['oil'][ce_batch_data.agent==agent].values
+                if np.any(y!=100*self.dist[0]):
+                    axs[a].plot(np.arange(len(y)), y, '-', label=agent)
+            axs.labs(a, 'train iteration', f'oil probability [%]')
+            axs[a].legend(fontsize=13)
+            a += 1
+
         plt.tight_layout()
         return axs
 
-    # def analyze_exposure(self, dd, agents=None, axs=None, a0=0, track='long'):
-    #     if agents is None: agents = self.agents_names
-    #     if 'agent' not in dd.columns: dd['agent'] = dd.title
-    #     dd = dd[dd.agent.isin(agents)]
-    #     paths = self.dd.path[(self.dd.group=='train')&
-    #             self.dd.agent.isin(agents)&(~self.dd.score.isna())].values
-    #     dd['long'] = 100 * (paths == dict(short=-1,stay=0,long=1)[track])
-    #     dd['long_fed'] = dd.long * dd.selected
-    #     def batch_weight(d):
-    #         if d.selected.sum() > 0:
-    #             d['w'] = d.weight * len(d) / d[
-    #                 d.selected.astype(bool)].weight.sum()
-    #         else:
-    #             d['w'] = 0
-    #         return d
-    #     dd = dd.groupby(['agent','batch']).apply(batch_weight)
-    #     dd['long_fed_w'] = dd.long * dd.selected * dd.w
-    #
-    #     if axs is None: axs = utils.Axes(3, 3, (5.5,3.5), fontsize=15)
-    #
-    #     sns.lineplot(data=dd, x='batch', hue='agent', y='long',
-    #                  hue_order=agents, ci=None, ax=axs[a0+0])
-    #     # sns.lineplot(data=dd[dd.long], x='batch', hue='agent', y='long_fed',
-    #     #              ci=None, ax=axs[a0+1])
-    #     sns.lineplot(data=dd, x='batch', hue='agent', y='long_fed_w',
-    #                  hue_order=agents, ci=None, ax=axs[a0+1])
-    #     sns.lineplot(data=dd[(dd.long>0)&dd.selected], x='batch', hue='agent',
-    #                  hue_order=agents, y='score', ci=None, ax=axs[a0+2])
-    #
-    #     axs.labs(a0+0, 'train iteration', f'{track}-path episodes [%]')
-    #     # axs.labs(a0+1, 'train iteration',
-    #     #          f'{track}-path episodes\nfed to optimizer [%]')
-    #     axs.labs(a0+1, 'train iteration',
-    #              f'weighted {track}-path episodes\nfed to optimizer [%]')
-    #     axs.labs(a0+2, 'train iteration',
-    #              f'{track}-path scores\nfed to optimizer [%]')
-    #     for a in range(3):
-    #         try:
-    #             plt.setp(axs[a0+a].get_legend().get_texts(), fontsize='13')
-    #         except:
-    #             pass
-    #     plt.tight_layout()
-    #
-    #     return axs
+    def analyze_behavior(self, agents=None, axs=None, a0=0):
+        if agents is None: agents = self.agents_names
+        if axs is None: axs = utils.Axes(3, 3)
+        a = a0
+
+        for metric, lab in zip(
+                (self.test_dx, self.test_dvx, self.test_dy), ('dx','dvx','dy')):
+            Q = np.arange(1,101)/100 if lab=='dx' else None
+            for agent in agents:
+                if agent not in metric:
+                    continue
+                x = np.concatenate(metric[agent])
+                utils.plot_quantiles(
+                    x, q=Q, ax=axs[a],
+                    label=f'{agent} (n={len(x)}, mean={np.mean(x):.1f})')
+            axs[a].set_xlim((0,100))
+            axs.labs(a, 'time-step quantile [%]', lab)
+            axs[a].legend(fontsize=13)
+            a += 1
+
+        return axs
 
     def show_tests(self, agents=None, n=3, clean_plot=False, **kwargs):
         if agents is None: agents = self.agents_names
         if isinstance(agents, str): agents = [agents]
+        dt = self.env.dt
 
-        axs = utils.Axes(5*n*len(agents), 5, (4.5,3), fontsize=15)
+        axs = utils.Axes(5*n*len(agents), 5, (5,3.5), fontsize=15)
+        plt.tight_layout()
         a = 0
 
         for agent in agents:
@@ -1134,16 +1293,20 @@ class Experiment:
                     (agent, 'test', episodes[i]), self.agents[agent],
                     update_res=False, verbose=0, **kwargs)
                 x, y, xl, yl = self.env.get_trajectory()
-                vx, vxl = np.diff(x)/self.env.dt, np.diff(xl)/self.env.dt
-                for j, (z,zl) in enumerate(((x,xl), (y,yl), (vx,vxl))):
-                    axs[a+j].plot(np.arange(len(z)), z, '-', label='agent')
-                    axs[a+j].plot(np.arange(len(zl)), zl, '-', label='leader')
-                    axs[a+j].legend(fontsize=12)
+                vx, vxl = np.diff(x)/dt, np.diff(xl)/dt
+                dx = x+self.env.l-xl[:len(x)]
+                axs[a].axhline(0, color='k')
+                axs[a].plot(dt*np.arange(len(dx)), dx, '-')
+                axs.labs(a, 't', '$\Delta$x', f'{agent}: score={scores[i]:.0f}')
+                for j, (z,zl) in enumerate(((vx,vxl), (y,yl))):
+                    axs[a+1+j].plot(dt*np.arange(len(z)), z, '-', label='agent')
+                    axs[a+1+j].plot(dt*np.arange(len(zl)), zl, '-', label='leader')
+                    axs[a+1+j].legend(fontsize=12)
                     if clean_plot or scores[i]==s:
-                        axs.labs(a+j, 't', ['x','y','vx'][j],
+                        axs.labs(a+1+j, 't', ['vx','y'][j],
                                  f'{agent}: score={scores[i]:.0f}')
                     else:
-                        axs.labs(a+j, 't', ['x','y','vx'][j],
+                        axs.labs(a+1+j, 't', ['vx','y'][j],
                                  f'{agent} ({ids[i]+1}/{N})\n'
                                  f'score={scores[i]:.0f} (L={T})\n'
                                  f'reproduced={s:.0f}')
@@ -1151,7 +1314,8 @@ class Experiment:
                 self.env.show_rewards_and_returns(axs, a+3)
                 for j in range(2):
                     axs[a+3+j].set_title(
-                        f'{agent} ({ids[i]+1}/{N}), score={scores[i]:.0f}',
+                        f'{agent} ({episodes[i]}: {ids[i]+1}/{N}), '
+                        f'score={scores[i]:.0f}',
                         fontsize=15)
 
                 a += 5
@@ -1159,101 +1323,44 @@ class Experiment:
         plt.tight_layout()
         return axs
 
-    # def show_train(self, agent_nm, n_iters=4, n_samp=5, iters=None,
-    #                clean_plot=False, **kwargs):
-    #     agent = self.agents[agent_nm]
-    #     if iters is None:
-    #         dd = self.dd[(self.dd.group=='train') & (self.dd.agent==agent_nm)]
-    #         max_iter = dd.ag_updates.max()
-    #         iters = np.linspace(0, max_iter, n_iters).astype(int)
-    #     else:
-    #         n_iters = len(iters)
-    #
-    #     axs = utils.Axes(n_iters*n_samp, n_samp, (2.7, 2.7),
-    #                      fontsize=15, grid=False)
-    #     a = 0
-    #
-    #     for iter in iters:
-    #         self.load_agent(agent, iter=iter)
-    #         d = self.dd[(self.dd.group=='train') & (
-    #                 self.dd.agent==agent_nm) & (self.dd.ag_updates==iter)]
-    #         d = d.sort_values('score')
-    #         N = len(d)
-    #         qs = np.linspace(0, 1, n_samp)
-    #         ids = ((N-1)*qs).astype(int)
-    #         episodes = d.episode.values[ids]
-    #         scores = d.score.values[ids]
-    #
-    #         for i in range(n_samp):
-    #             s, T = self.show_episode((agent_nm, 'train', episodes[i]), ax=axs[a],
-    #                                      verbose=0, **kwargs)
-    #             if clean_plot or scores[i]==s:
-    #                 axs.labs(a, None, None, f'{agent_nm}.{iter}: R={scores[i]:.0f}')
-    #                 axs[a].axis('off')
-    #             else:
-    #                 axs.labs(a, None, None,
-    #                          f'{agent_nm}.{iter} ({ids[i]+1}/{N})'
-    #                          f'\nR={scores[i]:.0f} ({T} steps)'
-    #                          f'\nreproduced={s:.0f}')
-    #             a += 1
-    #
-    #     self.load_agent(agent)
-    #
-    #     plt.tight_layout()
-    #     return axs
+    def analyze_episode(self, episode, agents=None, group='test', axs=None, a0=0,
+                        **kwargs):
+        if agents is None: agents = self.agents_names
+        if isinstance(agents, str): agents = [agents]
+        if axs is None:
+            axs = utils.Axes(4+2*len(agents), 4, (5,3.5), fontsize=15)
+        a = a0 + 4
 
-    # def visualize_policies(self, agents=None, iters=None, axs=None):
-    #     load = True
-    #     if iters is None:
-    #         iters = [None]
-    #         load = False
-    #     if agents is None: agents = self.agents_names
-    #     if isinstance(agents, str): agents = [agents]
-    #     W = len(agents) if len(iters)==1 else len(iters)
-    #     if axs is None: axs = utils.Axes(len(agents)*len(iters), W,
-    #                                      (2.7, 2.7), fontsize=15, grid=False)
-    #
-    #     env = self.env
-    #     n = env.rows
-    #     a = 0
-    #     for ag in agents:
-    #         agent = self.agents[ag]
-    #         for iter in iters:
-    #             if load:
-    #                 try:
-    #                     self.load_agent(agent, iter=iter)
-    #                 except:
-    #                     continue
-    #             M = np.repeat(np.repeat(np.clip(env.map,0,1), 3, 0), 3, 1)
-    #             M = 0.5 * np.stack(3*[M])
-    #             M[:, -3*2:-3*2+3, 3*2:3*2+3] = 1  # goal
-    #             for i in range(n):
-    #                 for j in range(n):
-    #                     if env.map[i, j] < 1:
-    #                         env.state_cell = np.array([i, j])
-    #                         env.state_xy = np.array([i, j])
-    #                         p = agent.act(
-    #                             self.get_agent_input())[2].numpy().reshape(-1)
-    #                         p /= np.max(p)
-    #                         i0 = 1 + 3 * i
-    #                         j0 = 1 + 3 * j
-    #                         M[:, i0, j0] = 1  # cell center
-    #                         M[1:, i0 - 1, j0] = p[0]  # l
-    #                         M[:2, i0 + 1, j0] = p[1]  # r
-    #                         M[0, i0, j0 - 1] = p[2]  # d
-    #                         M[1, i0, j0 + 1] = p[3]  # u
-    #             axs[a].imshow(M.T)
-    #             axs[a].invert_yaxis()
-    #             axs[a].axis('off')
-    #             tit = ag if iter is None else f'{ag}.{iter:03d}'
-    #             axs.labs(a, None, None, tit)
-    #             a += 1
-    #
-    #         if load:
-    #             self.load_agent(agent)
-    #
-    #     plt.tight_layout()
-    #     return axs
+        dt = self.env.dt
+        for i, agent in enumerate(agents):
+            s, _, _, T = self.run_episode(
+                (agent, group, episode), self.agents[agent],
+                update_res=False, verbose=0, **kwargs)
+            x, y, xl, yl = self.env.get_trajectory()
+            t = dt*np.arange(max(len(x),len(xl)))
+            vx, vxl = np.diff(x)/dt, np.diff(xl)/dt
+            x -= 40*t[:len(x)]
+            xl -= 40*t[:len(xl)]
+            axs[a0].axhline(0, color='k')
+            axs[a0].plot(dt*np.arange(len(x)), x+self.env.l-xl[:len(x)], '-',
+                         label=f'{agent}: {s:.0f}')
+            axs[a0].legend(fontsize=12)
+            axs.labs(a0, 't', '$\Delta$x')
+            for j, (z,zl) in enumerate(((x,xl), (vx,vxl), (y,yl))):
+                if i==0:
+                    axs[a0+1+j].plot(t[:len(zl)], zl, '-', label='leader')
+                axs[a0+1+j].plot(t[:len(z)], z, '-', label=f'{agent}: {s:.0f}')
+                axs[a0+1+j].legend(fontsize=12)
+                axs.labs(a0+1+j, 't', ['x - 40$\cdot$t','vx','y'][j])
+
+            self.env.show_rewards_and_returns(axs, a)
+            for j in range(2):
+                axs[a+j].set_title(
+                    f'{agent} ({episode}), score={s:.0f}', fontsize=15)
+            a += 2
+
+        plt.tight_layout()
+        return axs
 
     def main(self, **analysis_args):
         self.train_with_dependencies()
@@ -1261,39 +1368,97 @@ class Experiment:
         return self.analyze(**analysis_args)
 
 
-class CEM_Prob(CEM.CEM):
+class CEM_Driving(CEM.CEM):
     '''CEM for discrete probability distribution.'''
 
-    def __init__(self, *args, **kwargs):
-        super(CEM_Prob, self).__init__(*args, **kwargs)
-        self.default_dist_titles = ('p_0','p_acc','p_dec','p_turn','L')
-        # self.default_samp_titles = ('p_0','p_acc','p_dec','p_turn')
+    def __init__(self, update_s0=False, l=3.476, *args, **kwargs):
+        super(CEM_Driving, self).__init__(*args, **kwargs)
+        self.update_s0 = update_s0
+        self.l = l
+        self.default_dist_titles = ('oil', 'x0','v0','mid',
+                                    'p_0','p_acc','p_dec','p_hard','p_turn','L')
 
     def do_sample(self, dist):
-        # TODO non-iid actions? (e.g. pairs/triplets?)
-        return np.random.choice(np.arange(len(dist)-1), int(dist[-1]), p=dist[:-1])
+        p_oil = dist[0]
+        x, v, mid = dist[1:4]
+        p = dist[4:-1]
+        n = int(dist[-1])
+
+        oil = [np.random.random()<p_oil for _ in range(n)]
+        s0 = Experiment.get_init_state(None, x, v, mid_ratio=mid)
+        traj = np.random.choice(np.arange(len(p)), n, p=p)  # try non-iid actions?
+        return oil, s0, traj
+
+    def pdf_oil(self, oil, dist):
+        n = len(oil)
+        oil = int(np.sum(oil))
+        return stats.binom.pmf(oil, n, dist[0])
+
+    def pdf_init(self, s0, dist):
+        p_x = stats.expon.pdf(10-4*self.l-s0[0], 0, dist[1])
+        p_v = stats.norm.pdf(s0[2], dist[2], 3)
+        p_th = 1-dist[3] if s0[3]==0 else dist[3]
+        p = p_x * p_v * p_th
+        return p
 
     def pdf(self, x, dist):
-        return np.prod([dist[i]**np.sum(x==i) for i in range(len(dist)-1)])
+        oil, s0, traj = x
+        p_oil = self.pdf_oil(oil, dist)
+        p_init = self.pdf_init(s0, dist)
+        p_traj = np.prod([dist[4+i]**np.sum(traj==i)
+                          for i in range(len(dist)-4-1)])
+        return p_oil * p_init * p_traj
+
+    def log_p_traj(self, x, dist):
+        return np.sum([np.sum(x==i) * np.log(dist[4+i])
+                       for i in range(len(dist)-4-1)])
 
     def likelihood_ratio(self, x, use_original_dist=False):
         if use_original_dist:
             return 1
+
         dist0 = self.sample_dist[0]
         dist1 = self.sample_dist[-1]
-        logp0 = np.sum([np.sum(x==i)*np.log(dist0[i]) for i in range(len(dist0)-1)])
-        logp1 = np.sum([np.sum(x==i)*np.log(dist1[i]) for i in range(len(dist1)-1)])
-        return np.exp(logp0-logp1)
+
+        p_oil = self.pdf_oil(x[0], dist0) / self.pdf_oil(x[0], dist1)
+        p_init = self.pdf_init(x[1],dist0) / self.pdf_init(x[1],dist1)
+
+        logp0 = self.log_p_traj(x[2], dist0)
+        logp1 = self.log_p_traj(x[2], dist1)
+        p_traj = np.exp(logp0-logp1)
+
+        return p_oil * p_init * p_traj
 
     def update_sample_distribution(self, samples, weights):
         w = np.array(weights)
         w_mean = np.mean(w)
+        out = []
 
-        s = np.array(samples)
+        # oil frequency
+        oil0 = self.original_dist[0]
+        if oil0:
+            oil = np.mean(np.array([s[0] for s in samples]), axis=1)
+            out.append(np.clip(np.mean(w*oil)/w_mean, oil0/10, 1-(1-oil0)/10))
+        else:
+            out.append(0)
+
+        # init state
+        if self.update_s0:
+            s0 = np.array([s[1] for s in samples])
+            x = 10-4*self.l - np.mean(w*s0[:,0]) / w_mean
+            v = np.mean(w*s0[:,2]) / w_mean
+            mid = np.mean(w*(s0[:,3]!=0)) / w_mean
+            out.extend([np.clip(x,3,30), np.clip(v,-4,4),
+                        np.clip(mid,0.05,0.95)])
+        else:
+            out.extend(list(self.original_dist[1:4]))
+
+        # trajectory (actions)
+        s = np.array([s[2] for s in samples])
         dim = s.shape[1]
 
-        n = len(self.sample_dist[-1])
-        dist = [np.mean(w*np.mean(s==i, axis=1))/w_mean for i in range(n-2)]
+        n = len(self.sample_dist[-1]) - 4 - 1
+        dist = [np.mean(w*np.mean(s==i, axis=1))/w_mean for i in range(n-1)]
         # regularization: don't let the probabilities vanish
         reg = 0.1
         dist = [(1-reg)*p + reg/(len(dist)+1) for p in dist]
@@ -1301,7 +1466,9 @@ class CEM_Prob(CEM.CEM):
         dist.append(1-np.sum(dist))
         # last entry represents the length
         dist.append(dim)
-        return np.array(dist)
+        out.extend(dist)
+
+        return np.array(out)
 
 
 SAMPLE_AGENT_CONFS = dict(
