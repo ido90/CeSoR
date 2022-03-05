@@ -247,6 +247,16 @@ class Experiment:
             self.agents_names = [a.title for a in agents]
             self.agents = {a.title:a for a in agents}
 
+        # apply the same initialization for all agents
+        # (will fail if the architectures are different)
+        agents_list = list(self.agents.values())
+        for agent in agents_list[1:]:
+            try:
+                agent.load_state_dict(agents_list[0].state_dict())
+            except:
+                warnings.warn(
+                    f'Cannot load model initialization for {agent.title}.')
+
         self.best_train_iteration = {a:-1 for a in self.agents_names}
 
         if generate_tables:
