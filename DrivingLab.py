@@ -15,7 +15,6 @@ import torch
 import torch.optim as optim
 import gym
 
-import DrivingSim
 import Agents, GCVaR, CEM
 import utils
 
@@ -1280,12 +1279,13 @@ class Experiment:
 
         return axs
 
-    def show_tests(self, agents=None, n=3, clean_plot=False, **kwargs):
+    def show_tests(self, agents=None, n=3, clean_plot=False, axs=None, **kwargs):
         if agents is None: agents = self.agents_names
         if isinstance(agents, str): agents = [agents]
         dt = self.env.dt
 
-        axs = utils.Axes(5*n*len(agents), 5, (5,3.5), fontsize=15)
+        if axs is None:
+            axs = utils.Axes(5*n*len(agents), 5, (5,3.5), fontsize=15)
         plt.tight_layout()
         a = 0
 
@@ -1430,8 +1430,15 @@ class CEM_Driving(CEM.CEM):
         dist0 = self.sample_dist[0]
         dist1 = self.sample_dist[-1]
 
-        p_oil = self.pdf_oil(x[0], dist0) / self.pdf_oil(x[0], dist1)
-        p_init = self.pdf_init(x[1],dist0) / self.pdf_init(x[1],dist1)
+        if dist0[0] > 0:
+            p_oil = self.pdf_oil(x[0], dist0) / self.pdf_oil(x[0], dist1)
+        else:
+            p_oil = 1
+
+        if self.update_s0:
+            p_init = self.pdf_init(x[1],dist0) / self.pdf_init(x[1],dist1)
+        else:
+            p_init = 1
 
         logp0 = self.log_p_traj(x[2], dist0)
         logp1 = self.log_p_traj(x[2], dist1)
@@ -1446,7 +1453,7 @@ class CEM_Driving(CEM.CEM):
 
         # oil frequency
         oil0 = self.original_dist[0]
-        if oil0:
+        if oil0 > 0:
             oil = np.mean(np.array([s[0] for s in samples]), axis=1)
             out.append(np.clip(np.mean(w*oil)/w_mean, oil0/10, 1-(1-oil0)/10))
         else:
@@ -1485,7 +1492,7 @@ SAMPLE_AGENT_CONFS = dict(
     PG = (Agents.FC, dict()),
     GCVaR = (Agents.FC, dict(train_hparams=dict(cvar=0.05))),
     CE_SGCVaR = (Agents.FC, dict(train_hparams=dict(
-        cvar=0.05, ce_update_freq=1, soft_cvar=0.6))),
+        cvar=0.05, ce_update_freq=1, soft_cvar=0.8))),
 )
 
 if __name__ == '__main__':
