@@ -81,6 +81,10 @@ def qplot(data, y, x=None, hue=None, ax=None, **kwargs):
 
     return ax
 
+def smooth(y, n=10):
+    w = np.ones(n)/n
+    return np.convolve(y, w, mode='same')
+
 def labels(ax, xlab=None, ylab=None, title=None, fontsize=12):
     if isinstance(fontsize, int):
         fontsize = 3*[fontsize]
