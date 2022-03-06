@@ -34,7 +34,7 @@ class Experiment:
                  optimizer=optim.Adam, optim_freq=100, optim_q_ref=None,
                  cvar=1, soft_cvar=0, optimistic_q=False, no_change_tolerance=10,
                  gamma=1.0, lr=1e-1, lr_gamma=1, lr_step=0, weight_decay=0.0,
-                 state_mode='one_hot', ce_warmup_turns=5,
+                 state_mode='one_hot', ce_warmup_turns=0,
                  use_ce=False, ce_alpha=0.2, ce_ref_mode='train', ce_ref_alpha=None,
                  ce_n_orig=None, ce_w_clip=5, ce_constructor=None,
                  log_freq=2000, Ti=1, Tf=1, title=''):
