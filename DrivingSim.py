@@ -48,8 +48,8 @@ class DrivingSim(core.Env):
         self.lag = -2.5
         if rewards_conf is None:
             # collision, forward, backward, speed, acc, lane, road
-            # original values: (-,   1., 0.05, 0.1,    1., 0.1, 0.5)
-            rewards_conf =     (5., 0.5, 0.05, 0.1, 0.03, 0.5, 0.5)
+            # original values: (-,   1., 0.05, 0.1, 1.0, 0.1, 0.5)
+            rewards_conf =     (5., 0.5, 0.05, 0.1, 0.5, 1.0, 0.5)
         self.rconf = rewards_conf
         self.max_deviation = 10
 
@@ -172,7 +172,7 @@ class DrivingSim(core.Env):
         # keep similar speed
         r3 = np.log(1+np.exp(rc[3]*np.abs(dvx))) - log2
         # keep smooth acceleration
-        r4 = rc[4] * (self.curr_acc-self.prev_acc)**2
+        r4 = rc[4] * np.sum(np.abs(self.curr_acc-self.prev_acc))
         # stay in the same lane
         r5 = np.log(1+np.exp(rc[5]*np.abs(dy))) - log2
         # stay on road
@@ -204,12 +204,13 @@ class DrivingSim(core.Env):
             x,y,v,th = self.agent_state
             v_mean = v + 0.5 * self.dt * a[0]
             a1_scaled = a[1]*(40/v)**2
-            th_mean = th - 0.5 * self.dt * v/self.l * np.tan(a1_scaled)
+            omega = v_mean/self.l * np.tan(a1_scaled)
+            th_mean = th - 0.5 * self.dt * omega
             self.agent_state = np.array([
                 x + self.dt * v_mean * np.cos(th_mean),
                 y + self.dt * v_mean * np.sin(th_mean),
                 v + self.dt * a[0],
-                th - self.dt * v_mean/self.l * np.tan(a1_scaled),
+                th - self.dt * omega,
             ])
             self.agent_states.append(self.agent_state)
 
@@ -446,8 +447,8 @@ class DrivingSim(core.Env):
 
     def get_features(self):
         # raw state
-        # leader: x,vx,y,vy,ay
         # agent:  x,y,v,theta
+        # leader: x,vx,y,vy,ay
         x,y,v,th, xl,vxl,yl,vyl,ayl = self.get_obs()
 
         # features
@@ -457,4 +458,4 @@ class DrivingSim(core.Env):
         dy = y - yl
 
         # normalized features (to scale ~2)
-        return np.array([dx/5, dvx/2, ax/2, dy/2, y, 10*th])
+        return np.array([dx/5, dvx/2, ax/2, dy/2, 10*th])
