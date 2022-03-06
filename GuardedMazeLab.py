@@ -4,6 +4,7 @@
 
 import os
 import numpy as np
+from scipy import stats
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
@@ -99,7 +100,7 @@ class Experiment:
         self.CEs = {}
         if ce_constructor is None:
             if self.rand_cost:
-                ce_constructor = CEM.CEM_Ber_Exp
+                ce_constructor = CEM_Ber_Exp
             elif self.rand_guard:
                 ce_constructor = CEM.CEM_Beta
             else:
@@ -264,6 +265,16 @@ class Experiment:
             # assuming list (or another iterable) of actual agents
             self.agents_names = [a.title for a in agents]
             self.agents = {a.title:a for a in agents}
+
+        # apply the same initialization for all agents
+        # (will fail if the architectures are different)
+        agents_list = list(self.agents.values())
+        for agent in agents_list[1:]:
+            try:
+                agent.load_state_dict(agents_list[0].state_dict())
+            except:
+                warnings.warn(
+                    f'Cannot load model initialization for {agent.title}.')
 
         self.best_train_iteration = {a:-1 for a in self.agents_names}
 
@@ -1306,6 +1317,44 @@ class Experiment:
         self.train_with_dependencies()
         self.test()
         return self.analyze(**analysis_args)
+
+
+class CEM_Ber_Exp(CEM.CEM):
+    '''Implementation of the CEM for a pair (Bernoulli, Exponential).'''
+
+    def __init__(self, *args, check_nans=True, **kwargs):
+        super(CEM_Ber_Exp, self).__init__(*args, **kwargs)
+        self.default_dist_titles = ('guard_prob', 'guard_cost')
+        self.default_samp_titles = ('guard', 'guard_cost')
+        self.check_nans = check_nans
+
+    def do_sample(self, dist):
+        return int(np.random.random()<dist[0]), np.random.exponential(dist[1])
+
+    def pdf(self, x, dist):
+        # note: x[0] should be either 0 or 1
+        return (1-dist[0] if x[0]<0.5 else dist[0]) * stats.expon.pdf(x[1], 0, dist[1])
+
+    def likelihood_ratio(self, x, use_original_dist=False):
+        b0 = self.sample_dist[0][0]
+        e0 = self.sample_dist[0][1]
+        b1 = self.sample_dist[-1][0]
+        e1 = self.sample_dist[-1][1]
+        br = (1-b0)/(1-b1) if x[0]<0.5 else b0/b1
+        er = (e1/e0) * np.exp(-x[1]*(1/e0-1/e1))
+        lr = br * er
+        if self.check_nans and np.isnan(lr):
+            print(b0,b1,e0,e1)
+            print(x)
+            import pdb
+            pdb.set_trace()
+        return lr
+
+    def update_sample_distribution(self, samples, weights):
+        w = np.array(weights)
+        s0 = np.array([s[0] for s in samples])
+        s1 = np.array([s[1] for s in samples])
+        return np.mean(w*s0)/np.mean(w), np.mean(w*s1)/np.mean(w)
 
 
 SAMPLE_AGENT_CONFS = dict(

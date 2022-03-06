@@ -19,7 +19,7 @@ implementation of the following methods:
 Note that dist is an object that represents the distribution, and its type is
 up to the user. A standard type may be a list of distribution parameters.
 
-Examples for inheritance from CEM are provided below - see CEM_Beta, CEM_Ber.
+Examples for inheritance from CEM are provided below - see CEM_Ber, CEM_Beta.
 A simple usage example is provided in the bottom of this file - see __main__.
 
 Module structure:
@@ -35,8 +35,8 @@ CEM:
         if there're enough samples and it's time to update the distribution:
             select_samples().
             update_sample_distribution(samples, weights).   [IMPLEMENTED BY USER]
-CEM_Beta: an inherited class implementing CEM for a 1D Beta distribution.
 CEM_Ber: an inherited class implementing CEM for a 1D Bernoulli distribution.
+CEM_Beta: an inherited class implementing CEM for a 1D Beta distribution.
 
 Written by Ido Greenberg, 2022.
 '''
@@ -379,31 +379,11 @@ def quantile(x, q, w=None, is_sorted=False, estimate_underlying_quantile=False):
     return np.interp(q, w, x)
 
 
-class CEM_Beta(CEM):
-    '''Implementation example of the CEM for a 1D Beta distribution.'''
+class CEM_Ber(CEM):
+    '''Implementation example of the CEM for a 1D Bernoulli distribution.'''
 
     # Note: in this 1D case, dist is a scalar in [0,1]. In general, dist may be
     #  any object that represents a distribution (e.g., any kind of array).
-
-    def __init__(self, *args, **kwargs):
-        super(CEM_Beta, self).__init__(*args, **kwargs)
-        self.default_dist_titles = 'guard_prob'
-        self.default_samp_titles = 'guard_prob'
-
-    def do_sample(self, dist):
-        return np.random.beta(2*dist, 2-2*dist)
-
-    def pdf(self, x, dist):
-        return stats.beta.pdf(np.clip(x,0.001,0.999), 2*dist, 2-2*dist)
-
-    def update_sample_distribution(self, samples, weights):
-        w = np.array(weights)
-        s = np.array(samples)
-        return np.clip(np.mean(w*s)/np.mean(w), 0.001, 0.999)
-
-
-class CEM_Ber(CEM):
-    '''CEM for Bernoulli distribution.'''
 
     def __init__(self, *args, **kwargs):
         super(CEM_Ber, self).__init__(*args, **kwargs)
@@ -423,42 +403,24 @@ class CEM_Ber(CEM):
         return np.mean(w*s)/np.mean(w)
 
 
-class CEM_Ber_Exp(CEM):
-    '''Implementation example of the CEM for a pair (Bernoulli, Exponential).'''
+class CEM_Beta(CEM):
+    '''CEM for 1D Beta distribution.'''
 
-    def __init__(self, *args, check_nans=True, **kwargs):
-        super(CEM_Ber_Exp, self).__init__(*args, **kwargs)
-        self.default_dist_titles = ('guard_prob', 'guard_cost')
-        self.default_samp_titles = ('guard', 'guard_cost')
-        self.check_nans = check_nans
+    def __init__(self, *args, **kwargs):
+        super(CEM_Beta, self).__init__(*args, **kwargs)
+        self.default_dist_titles = 'guard_prob'
+        self.default_samp_titles = 'guard_prob'
 
     def do_sample(self, dist):
-        return int(np.random.random()<dist[0]), np.random.exponential(dist[1])
+        return np.random.beta(2*dist, 2-2*dist)
 
     def pdf(self, x, dist):
-        # note: x[0] should be either 0 or 1
-        return (1-dist[0] if x[0]<0.5 else dist[0]) * stats.expon.pdf(x[1], 0, dist[1])
-
-    def likelihood_ratio(self, x, use_original_dist=False):
-        b0 = self.sample_dist[0][0]
-        e0 = self.sample_dist[0][1]
-        b1 = self.sample_dist[-1][0]
-        e1 = self.sample_dist[-1][1]
-        br = (1-b0)/(1-b1) if x[0]<0.5 else b0/b1
-        er = (e1/e0) * np.exp(-x[1]*(1/e0-1/e1))
-        lr = br * er
-        if self.check_nans and np.isnan(lr):
-            print(b0,b1,e0,e1)
-            print(x)
-            import pdb
-            pdb.set_trace()
-        return lr
+        return stats.beta.pdf(np.clip(x,0.001,0.999), 2*dist, 2-2*dist)
 
     def update_sample_distribution(self, samples, weights):
         w = np.array(weights)
-        s0 = np.array([s[0] for s in samples])
-        s1 = np.array([s[1] for s in samples])
-        return np.mean(w*s0)/np.mean(w), np.mean(w*s1)/np.mean(w)
+        s = np.array(samples)
+        return np.clip(np.mean(w*s)/np.mean(w), 0.001, 0.999)
 
 
 if __name__ == '__main__':
