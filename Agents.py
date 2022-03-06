@@ -74,7 +74,7 @@ class NN(nn.Module):
 
 class FC(NN):
     def __init__(self, mid_sizes=None, state_dim=4, act_dim=2, lstm=False,
-                 head_bias=True, dropout=0.0, **kwargs):
+                 activation='tanh', head_bias=True, dropout=0.0, **kwargs):
         super(FC, self).__init__(state_dim, act_dim, **kwargs)
 
         self.lstm = lstm
@@ -86,6 +86,7 @@ class FC(NN):
 
         self.layers = nn.ModuleList([layer(a, b) for a,b in \
                                      zip(sizes[:-1],sizes[1:])]).to(self.device)
+        self.activation = dict(relu=F.relu, tanh=torch.tanh)[activation]
         self.drop_p = dropout
         self.dropouts = None
         if self.drop_p:
@@ -120,7 +121,7 @@ class FC(NN):
                 x = layer(x)
                 if self.drop_p:
                     x = self.dropouts[j](x)
-                x = F.relu(x)
+                x = self.activation(x)
 
         action_scores = self.head(x)
         return F.softmax(action_scores/T, dim=1).cpu()
