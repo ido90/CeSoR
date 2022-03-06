@@ -283,7 +283,7 @@ class GCVaR:
 def alpha_scheduler(iter, alpha, soft_cvar=0, n_iters=1, skip_iters=0,
                     resolution=0):
     if soft_cvar:
-        ni = max((1-soft_cvar) * n_iters, skip_iters)
+        ni = skip_iters
         nf = soft_cvar * n_iters
         if iter < ni:
             return 1
