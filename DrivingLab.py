@@ -18,16 +18,16 @@ import gym
 import Agents, GCVaR, CEM
 import utils
 
-STATE_DIM = dict(default=6)
+STATE_DIM = dict(default=5)
 
 class Experiment:
 
     ###############   INITIALIZATION & SETUP   ###############
 
-    def __init__(self, agents=None, train_episodes=100000, valid_episodes=200,
+    def __init__(self, agents=None, train_episodes=160000, valid_episodes=200,
                  test_episodes=1000, global_seed=0, agent_mid_layers=(32,),
-                 max_episode_len=30, episode_len_init=3, nine_actions=False,
-                 p_oil=0, rewards_conf=None,
+                 max_episode_len=30, episode_len_init=6, nine_actions=False,
+                 p_oil=0, rewards_conf=None, cut_training_in_the_middle=None,
                  valid_freq=10, save_best_model=True, save_all_policies=False,
                  leader_probs=(0.35,0.3,0.248,0.002,0.1), max_distributed=0,
                  optimizer=optim.Adam, optim_freq=400, optim_q_ref=None,
@@ -50,6 +50,7 @@ class Experiment:
         self.n_test = test_episodes
         self.max_episode_len = max_episode_len
         self.state_mode = state_mode
+        self.cut_training_in_the_middle = cut_training_in_the_middle
 
         self.leader_probs = leader_probs
         self.dist = np.concatenate((
@@ -341,10 +342,10 @@ class Experiment:
 
     @staticmethod
     def get_init_state(seed=None, dx_scale=10, dv_shift=0, dv_scale=3,
-                       mid_ratio=0.3, l=3.476):
+                       mid_ratio=0.2, l=3.476):
         rng = np.random.RandomState(seed)
         # location
-        x = 10 - 4*l - rng.exponential(dx_scale)
+        x = 10 - 5*l - rng.exponential(dx_scale)
         # speed
         v = rng.normal(dv_shift, dv_scale)
         # lane
@@ -675,7 +676,7 @@ class Experiment:
                     self.save_agent(agent, iter=True)
                 self.T = Ti + (Tf-Ti) * i/len(ids)
                 self.L = int(L_init + (self.max_episode_len-L_init) * min(
-                    1.*i, 0.8*len(ids)) / (0.8*len(ids)) )
+                    1.*i, 0.5*len(ids)) / (0.5*len(ids)) )
                 ce.original_dist[-1] = np.ceil(self.L/1.5)
                 ce.sample_dist[-1][-1] = np.ceil(self.L/1.5)
 
@@ -708,6 +709,10 @@ class Experiment:
             # log
             if log_freq > 0 and (i % log_freq) == 0:
                 self.train_log(agent_nm, i, len(ids), valid_mean, t0)
+
+            if self.cut_training_in_the_middle and \
+                    i>=self.cut_training_in_the_middle:
+                break
 
         # load best model
         if self.save_best_model:
@@ -1405,7 +1410,7 @@ class CEM_Driving(CEM.CEM):
         return stats.binom.pmf(oil, n, dist[0])
 
     def pdf_init(self, s0, dist):
-        p_x = stats.expon.pdf(10-4*self.l-s0[0], 0, dist[1])
+        p_x = stats.expon.pdf(10-5*self.l-s0[0], 0, dist[1])
         p_v = stats.norm.pdf(s0[2], dist[2], 3)
         p_th = 1-dist[3] if s0[3]==0 else dist[3]
         p = p_x * p_v * p_th
@@ -1462,7 +1467,7 @@ class CEM_Driving(CEM.CEM):
         # init state
         if self.update_s0:
             s0 = np.array([s[1] for s in samples])
-            x = 10-4*self.l - np.mean(w*s0[:,0]) / w_mean
+            x = 10-5*self.l - np.mean(w*s0[:,0]) / w_mean
             v = np.mean(w*s0[:,2]) / w_mean
             mid = np.mean(w*(s0[:,3]!=0)) / w_mean
             out.extend([np.clip(x,3,30), np.clip(v,-4,4),
