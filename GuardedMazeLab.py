@@ -337,8 +337,8 @@ class Experiment:
 
     def load_agent(self, agent, nm=None, iter=None):
         if isinstance(agent, str):
-            agent = self.agents[agent]
             if nm is None: nm = agent
+            agent = self.agents[agent]
         else:
             if nm is None: nm = agent.title
         if self.title:

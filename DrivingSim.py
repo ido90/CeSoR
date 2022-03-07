@@ -373,18 +373,22 @@ class DrivingSim(core.Env):
         plt.tight_layout()
         return axs
 
-    def show_frame(self, i=None, ax=None, show_info=True):
+    def show_frame(self, i=None, ax=None, show_info=True, lab='agent',
+                   extra_cars=None):
         if i is None: i = self.i
         if ax is None: ax = utils.Axes(1, 1, (4,3.5))[0]
 
         # get cars
         xl, vxl, yl, vyl = self.leader_states[i, :4]
         thl = np.arctan2(vyl, vxl)
-        x, y, v, th = self.agent_states[i][:4]
+        x, y, v, th = self.agent_states[i]
 
         # plot cars
         ax.plot([yl], [xl], 'r.-', label='leader')
-        ax.plot([y], [x], 'b.-', label='agent')
+        ax.plot([y], [x], 'b.-', label=lab)
+        if extra_cars is not None:
+            for nm, (xx,yy,cc) in extra_cars.items():
+                ax.plot([yy], [xx], cc, markersize=10, label=nm)
 
         l = 0.45*self.l
         img = Image.open('images/car1.png').rotate(-180/np.pi*thl)
@@ -396,6 +400,12 @@ class DrivingSim(core.Env):
         x0 = 0.5 * (x + xl)
         d = 1.2 * max(np.abs(x-xl)/2, np.abs(y-yl))
         d = max(d, 3.5*self.l)
+        if extra_cars is not None:
+            for nm, (xx,yy,cc) in extra_cars.items():
+                d_cand = 1.2 * max(np.abs(xx-xl)/2, np.abs(yy-yl))
+                if d_cand > d:
+                    x0 = 0.5 * (xx + xl)
+                    d = d_cand
 
         # plot road
         H = 2*d
@@ -421,8 +431,9 @@ class DrivingSim(core.Env):
         # figure design
         ax.grid(False)
         ax.set_xticks([])
-        ax.set_yticks([x, xl])
+        ax.set_yticks([])
         if show_info:
+            ax.set_yticks([x, xl])
             ax.set_yticklabels([f'$\Delta$={int(np.round(xl-x-self.l)):02d}m', ''],
                                fontsize=13, rotation=90,
                                verticalalignment='bottom')
