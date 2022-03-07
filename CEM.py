@@ -45,7 +45,8 @@ import numpy as np
 from scipy import stats
 import pandas as pd
 import pickle as pkl
-import warnings
+import copy, warnings
+import utils
 
 
 class CEM:
@@ -134,7 +135,7 @@ class CEM:
         self.update_count = 0
         self.ref_scores = None
 
-        self.sample_dist = [self.original_dist]
+        self.sample_dist = [copy.copy(self.original_dist)]
         self.sampled_data = [[]]
         self.weights = [[]]
         self.scores = [[]]
@@ -183,9 +184,9 @@ class CEM:
         self.weights[-1].append(w)
         self.sample_count += 1
         if 0 < self.batch_size < self.sample_count:
-            warnings.warn(f'Drawn {self.sample_count}>{self.batch_size} samples without '
-                          f'updating (only {self.update_count}<{self.batch_size} '
-                          'scores for update)')
+            warnings.warn(f'Drawn {self.sample_count}>{self.batch_size} samples '
+                          f'without updating (only {self.update_count}<'
+                          f'{self.batch_size} scores for update)')
         return x, w
 
     def get_weight(self, x, use_original_dist=False):
@@ -204,7 +205,7 @@ class CEM:
                self.pdf(x, self.sample_dist[-1])
 
     def do_sample(self, dist):
-        '''Given distribution parameters, return a sample drawn from the distribution.'''
+        '''Given dist. parameters, return a sample drawn from the distribution.'''
         raise NotImplementedError()
 
     def pdf(self, x, dist):
@@ -274,7 +275,8 @@ class CEM:
         R = np.array(self.scores[-1])
         selection = R < q
         if self.force_min_samples:
-            missing_samples = int(self.internal_alpha*self.batch_size - np.sum(selection))
+            missing_samples = int(
+                self.internal_alpha*self.batch_size - np.sum(selection))
             if missing_samples > 0:
                 samples_to_add = np.where(R == q)[0]
                 if missing_samples < len(samples_to_add):
@@ -353,6 +355,29 @@ class CEM:
         d2 = pd.DataFrame(d2_dict)
 
         return d1, d2
+
+    def show_sampled_scores(self, ax=None, ylab=None):
+        if ax is None: ax = utils.Axes(1,1)[0]
+        if ylab is None:
+            ylab = 'score'
+        cvar = lambda x, alpha: np.mean(np.sort(x)[:int(np.ceil(alpha*len(x)))])
+
+        c1, c2 = self.get_data()
+        c2['orig'] = c2.sample_id < self.n_orig_per_batch
+        mean_orig = c2[c2.orig].groupby('batch').apply(lambda d: d.score.mean())
+        cvar_orig = c2[c2.orig].groupby('batch').apply(
+            lambda d: cvar(d.score.values,self.ref_alpha))
+        mean_samp = c2[~c2.orig].groupby('batch').apply(lambda d: d.score.mean())
+        cvar_samp = c2[~c2.orig].groupby('batch').apply(
+            lambda d: cvar(d.score.values,self.ref_alpha))
+
+        ax.plot(mean_orig, label='Reference / mean')
+        ax.plot(cvar_orig, label='Reference / CVaR')
+        ax.plot(mean_samp, label='Sample / mean')
+        ax.plot(cvar_samp, label='Sample / CVaR')
+        utils.labels(ax, 'iteration', ylab, fontsize=15)
+        ax.legend(fontsize=14)
+        return ax
 
 
 def quantile(x, q, w=None, is_sorted=False, estimate_underlying_quantile=False):
