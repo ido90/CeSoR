@@ -297,11 +297,17 @@ class Experiment:
             self.CEs[name2].title = name2
 
         for i in range(len(self.agents_names)):
-            if self.agents_names[i]:
+            if self.agents_names[i] == name1:
                 self.agents_names[i] = name2
                 break
 
+        for k, v in self.episode_map.items():
+            if k[0] == name1:
+                self.episode_map[(name2, k[1], k[2])] = v
+                del self.episode_map[k]
+
     def save_agent(self, agent, nm=None, iter=False):
+        if isinstance(agent, str): agent = self.agents[agent]
         if nm is None: nm = agent.title
         if self.title:
             nm = f'{self.title}_{nm}'
@@ -1372,7 +1378,7 @@ class Experiment:
         if agents is None: agents = self.agents_names
         if isinstance(agents, str): agents = [agents]
         if axs is None:
-            axs = utils.Axes(4+2*len(agents), 4, (5,3.5), fontsize=15)
+            axs = utils.Axes(4+2*len(agents), 4, (4.5,3), fontsize=15)
         a = a0 + 4
 
         dt = self.env.dt
