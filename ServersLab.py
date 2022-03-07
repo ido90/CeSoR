@@ -1244,7 +1244,7 @@ class Experiment:
         sns.lineplot(data=rr, x='t', hue='agent', style='cost_type', y='cost',
                      ci=None, ax=axs[a])
         axs.labs(a, 't', 'cost')
-        axs[a].legend(fontsize=12)
+        axs[a].legend(fontsize=11)
 
         return axs
 
