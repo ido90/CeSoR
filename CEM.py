@@ -372,9 +372,9 @@ class CEM:
             lambda d: cvar(d.score.values,self.ref_alpha))
 
         ax.plot(mean_orig, label='Reference / mean')
-        ax.plot(cvar_orig, label='Reference / CVaR')
+        ax.plot(cvar_orig, label=f'Reference / CVaR$_{{{100*self.ref_alpha:.0f}\%}}$')
         ax.plot(mean_samp, label='Sample / mean')
-        ax.plot(cvar_samp, label='Sample / CVaR')
+        ax.plot(cvar_samp, label=f'Sample / CVaR$_{{{100*self.ref_alpha:.0f}\%}}$')
         utils.labels(ax, 'iteration', ylab, fontsize=15)
         ax.legend(fontsize=14)
         return ax

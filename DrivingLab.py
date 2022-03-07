@@ -983,7 +983,9 @@ class Experiment:
         if fname is None: fname=f'outputs/{self.title}'
         fname += '.pkl'
         with open(fname, 'wb') as h:
-            pkl.dump((self.dd.copy(), self.valid_scores.copy()), h)
+            pkl.dump((self.dd.copy(), self.valid_scores.copy(),
+                      self.test_actions.copy(), self.test_dx.copy(),
+                      self.test_dvx.copy(), self.test_dy.copy()), h)
 
         for anm in self.agents_names:
             if agents: self.save_agent(anm)
@@ -994,7 +996,8 @@ class Experiment:
         if fname is None: fname=f'outputs/{self.title}'
         fname += '.pkl'
         with open(fname, 'rb') as h:
-            self.dd, self.valid_scores = pkl.load(h)
+            self.dd, self.valid_scores, self.test_actions, \
+            self.test_dx, self.test_dvx, self.test_dy = pkl.load(h)
 
         for anm in self.agents_names:
             if agents: self.load_agent(anm)
