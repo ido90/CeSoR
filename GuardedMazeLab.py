@@ -321,9 +321,10 @@ class Experiment:
                 self.agents_names[i] = name2
                 break
 
-        for k, v in self.episode_map.items():
+        ks = list(self.episode_map.keys())
+        for k in ks:
             if k[0] == name1:
-                self.episode_map[(name2, k[1], k[2])] = v
+                self.episode_map[(name2, k[1], k[2])] = self.episode_map[k]
                 del self.episode_map[k]
 
     def save_agent(self, agent, nm=None, iter=False):
