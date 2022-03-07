@@ -25,19 +25,19 @@ class Experiment:
 
     ###############   INITIALIZATION & SETUP   ###############
 
-    def __init__(self, agents=None, train_episodes=500, valid_episodes=20,
-                 test_episodes=100, global_seed=0, maze_mode=1, maze_size=None,
+    def __init__(self, agents=None, train_episodes=100000, valid_episodes=60,
+                 test_episodes=1000, global_seed=0, maze_mode=1, maze_size=None,
                  max_episode_steps=None, save_all_policies=False,
                  detailed_rewards=False, valid_freq=10, save_best_model=True,
                  guard_prob=0.05, guard_cost=4, rand_guard=True, rand_cost=False,
                  action_noise=0.2, max_distributed=0,
-                 optimizer=optim.Adam, optim_freq=100, optim_q_ref=None,
-                 cvar=1, soft_cvar=0, optimistic_q=False, no_change_tolerance=10,
+                 optimizer=optim.Adam, optim_freq=400, optim_q_ref=None,
+                 cvar=1, soft_cvar=0, optimistic_q=False, no_change_tolerance=0,
                  gamma=1.0, lr=1e-1, lr_gamma=1, lr_step=0, weight_decay=0.0,
                  state_mode='one_hot', ce_warmup_turns=0,
                  use_ce=False, ce_alpha=0.2, ce_ref_mode='train', ce_ref_alpha=None,
                  ce_n_orig=None, ce_w_clip=5, ce_constructor=None,
-                 log_freq=2000, Ti=1, Tf=1, title=''):
+                 log_freq=4000, Ti=1, Tf=1, title=''):
         self.title = title
         self.global_seed = global_seed
         np.random.seed(self.global_seed)
@@ -755,7 +755,8 @@ class Experiment:
             # merge results
             for agent_nm, d in zip(names, dd):
                 self.best_train_iteration[agent_nm] = d[0]
-                self.dd[(self.dd.agent == agent_nm) & (self.dd.group == 'train')] = d[1]
+                self.dd[(self.dd.agent == agent_nm) &
+                        (self.dd.group == 'train')] = d[1]
                 self.valid_scores[agent_nm] = d[2]
 
                 # update agent
@@ -869,10 +870,12 @@ class Experiment:
         try:
             scores = E.test(agent_nm, group=group, **kwargs)
         except:
-            q.put((agent_nm, (E.dd[(E.dd.agent==agent_nm)&(E.dd.group==group)],), []))
+            q.put((agent_nm, (E.dd[(E.dd.agent==agent_nm)&(E.dd.group==group)],),
+                   []))
             print(f'Error in {agent_nm}.')
             raise
-        q.put((agent_nm, (E.dd[(E.dd.agent == agent_nm) & (E.dd.group == group)],), scores))
+        q.put((agent_nm, (E.dd[(E.dd.agent == agent_nm) & (E.dd.group == group)],),
+               scores))
 
     def test(self, agent_nm=None, group='test', update_inplace=True, temperature=0,
              verbose=1, **kwargs):
@@ -1039,7 +1042,7 @@ class Experiment:
 
         return ests
 
-    def analyze(self, agents=None, W=3, axsize=(6,4), Q=100,
+    def analyze(self, agents=None, W=3, axsize=(6,4), Q=100, ci=95,
                 train_estimators=('mean','cvar05'), verify_train_success=False):
         if agents is None: agents = self.agents_names
         train_estimators = self.build_estimators(train_estimators)
@@ -1055,7 +1058,7 @@ class Experiment:
         # Train scores
         for est_name, est in train_estimators.items():
             sns.lineplot(data=train_valid_df, x='train_iteration', hue='agent',
-                         style='group', y='score', estimator=est, ax=axs[a])
+                         style='group', y='score', ci=ci, estimator=est, ax=axs[a])
             axs[a].set_xlim((0,None))
             plt.setp(axs[a].get_legend().get_texts(), fontsize='13')
             axs.labs(a, 'train iteration', f'{est_name} score')
@@ -1068,20 +1071,22 @@ class Experiment:
             scores = test_df.score[test_df.agent==agent].values
             utils.plot_quantiles(
                 scores, q=np.arange(Q+1)/100, showmeans=True, ax=axs[a],
-                label=f'{agent} ({np.mean(scores):.1f})')
+                label=f'{agent} ({np.mean(scores):.1f} / {cvar(scores,0.05):.1f})')
             print(f'{agent} ({self.best_train_iteration[agent]}/{n_iters}):\t'
                   f'mean={np.mean(scores):.1f}\t'
                   f'CVaR10={cvar(scores,0.1):.1f}\tCVaR05={cvar(scores,0.05):.1f}')
-        axs[a].set_xlim((0,Q))
-        axs.labs(a, 'episode quantile [%]', 'score')
+        axs.labs(a, 'episode quantile [%]\n(legend: mean / cvar$_{5\%}$)', 'score')
         axs[a].legend(fontsize=13)
         a += 1
 
         # Optimizer: sample sizes and weights
         if len(opt_sample_data) > 0:
-            self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a+0, track='stay')
-            self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a+3, track='short')
-            self.analyze_exposure(opt_sample_data, agents, axs=axs, a0=a+6, track='long')
+            self.analyze_exposure(
+                opt_sample_data, agents, axs=axs, a0=a+0, track='stay')
+            self.analyze_exposure(
+                opt_sample_data, agents, axs=axs, a0=a+3, track='short')
+            self.analyze_exposure(
+                opt_sample_data, agents, axs=axs, a0=a+6, track='long')
             a += 9
 
         filter_trivial_agents = False
@@ -1119,7 +1124,8 @@ class Experiment:
         if len(ce_batch_data) > 0:
             axs[a].axhline(100*self.guard_prob, color='k', label='original')
             for agent in agents:
-                y = 100 * ce_batch_data.guard_prob[ce_batch_data.agent==agent].values
+                y = 100 * ce_batch_data.guard_prob[
+                    ce_batch_data.agent==agent].values
                 if np.any(y!=100*self.guard_prob):
                     axs[a].plot(np.arange(len(y)), y, '.-', label=agent)
             axs[a].set_ylim((0, 100))
@@ -1243,8 +1249,8 @@ class Experiment:
             scores = d.score.values[ids]
 
             for i in range(n_samp):
-                s, T = self.show_episode((agent_nm, 'train', episodes[i]), ax=axs[a],
-                                         verbose=0, **kwargs)
+                s, T = self.show_episode((agent_nm, 'train', episodes[i]),
+                                         ax=axs[a], verbose=0, **kwargs)
                 if clean_plot or scores[i]==s:
                     axs.labs(a, None, None, f'{agent_nm}.{iter}: R={scores[i]:.0f}')
                     axs[a].axis('off')
@@ -1333,7 +1339,8 @@ class CEM_Ber_Exp(CEM.CEM):
 
     def pdf(self, x, dist):
         # note: x[0] should be either 0 or 1
-        return (1-dist[0] if x[0]<0.5 else dist[0]) * stats.expon.pdf(x[1], 0, dist[1])
+        return (1-dist[0] if x[0]<0.5 else dist[0]) * \
+               stats.expon.pdf(x[1], 0, dist[1])
 
     def likelihood_ratio(self, x, use_original_dist=False):
         b0 = self.sample_dist[0][0]
