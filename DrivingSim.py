@@ -423,7 +423,7 @@ class DrivingSim(core.Env):
         ax.set_xticks([])
         ax.set_yticks([x, xl])
         if show_info:
-            ax.set_yticklabels([f'$\Delta$={int(np.round(xl-x)):02d}m', ''],
+            ax.set_yticklabels([f'$\Delta$={int(np.round(xl-x-self.l)):02d}m', ''],
                                fontsize=13, rotation=90,
                                verticalalignment='bottom')
             ax.set_title(f't={self.dt*i:.1f}s', fontsize=14)
