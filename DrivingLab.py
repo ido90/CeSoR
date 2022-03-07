@@ -280,6 +280,27 @@ class Experiment:
             self.generate_train_dd(title)
             self.generate_test_dd(title)
 
+    def rename_agent(self, name1, name2):
+        self.dd.loc[self.dd.agent==name1, 'agent'] = name2
+
+        for att in self.__dict__:
+            obj = getattr(self, att)
+            if isinstance(obj, dict) and name1 in obj:
+                obj[name2] = obj[name1]
+                del obj[name1]
+
+        if name2 in self.agents:
+            self.agents[name2].title = name2
+        if name2 in self.optimizers:
+            self.optimizers[name2].title = name2
+        if name2 in self.CEs:
+            self.CEs[name2].title = name2
+
+        for i in range(len(self.agents_names)):
+            if self.agents_names[i]:
+                self.agents_names[i] = name2
+                break
+
     def save_agent(self, agent, nm=None, iter=False):
         if nm is None: nm = agent.title
         if self.title:
@@ -985,7 +1006,8 @@ class Experiment:
         with open(fname, 'wb') as h:
             pkl.dump((self.dd.copy(), self.valid_scores.copy(),
                       self.test_actions.copy(), self.test_dx.copy(),
-                      self.test_dvx.copy(), self.test_dy.copy()), h)
+                      self.test_dvx.copy(), self.test_dy.copy(),
+                      self.best_train_iteration.copy()), h)
 
         for anm in self.agents_names:
             if agents: self.save_agent(anm)
@@ -997,7 +1019,8 @@ class Experiment:
         fname += '.pkl'
         with open(fname, 'rb') as h:
             self.dd, self.valid_scores, self.test_actions, \
-            self.test_dx, self.test_dvx, self.test_dy = pkl.load(h)
+            self.test_dx, self.test_dvx, self.test_dy, \
+            self.best_train_iteration = pkl.load(h)
 
         for anm in self.agents_names:
             if agents: self.load_agent(anm)
@@ -1110,8 +1133,8 @@ class Experiment:
 
         return ests
 
-    def analyze(self, agents=None, W=3, axsize=(6,4), Qs=(100,5),
-                train_estimators=('mean','cvar05','cvar01'),
+    def analyze(self, agents=None, W=3, axsize=(5,3.3), Qs=(100,5),
+                train_estimators=('mean','cvar05','cvar01'), ci=95,
                 verify_train_success=False):
         if agents is None: agents = self.agents_names
         train_estimators = self.build_estimators(train_estimators)
@@ -1132,7 +1155,7 @@ class Experiment:
                 sns.lineplot(data=train_valid_df[train_valid_df.group==group],
                              x='train_iteration', hue='agent', y='cost',
                              estimator=est, ax=axs[a],
-                             ci=None if group=='train' else 95)
+                             ci=None if group=='train' else ci)
                 axs[a].set_xlim((0,None))
                 axs[a].set_yscale('log')
                 lg = axs[a].get_legend()
@@ -1140,7 +1163,7 @@ class Experiment:
                     plt.setp(lg.get_texts(), fontsize='13')
                 axs.labs(a, 'train iteration', f'{est_name} cost', f'{group} data')
                 if group == 'valid':
-                    axs[a].set_ylim((None,2000))
+                    axs[a].set_ylim((None,3000))
                 a += 1
 
         # Test scores
@@ -1156,9 +1179,11 @@ class Experiment:
                 scores = test_df.score[test_df.agent==agent].values
                 utils.plot_quantiles(
                     scores, q=np.linspace(0,Q/100,101), showmeans=True, ax=axs[a],
-                    label=f'{agent} ({np.mean(scores):.1f})')
-            axs[a].set_xlim((0,Q))
-            axs.labs(a, 'episode quantile [%]', 'score')
+                    label=f'{agent} ({np.mean(scores):.0f} / '
+                          f'{cvar(scores,0.01):.0f})')
+            # axs[a].set_xlim((0,Q))
+            axs.labs(a, 'episode quantile [%]\n(legend: mean / cvar$_{1\%}$)',
+                     'score')
             axs[a].legend(fontsize=13)
             a += 1
 
@@ -1217,7 +1242,7 @@ class Experiment:
 
         if len(ce_batch_data) > 0:
             ynms = self.dd.columns[6:11]
-            ylabs = ('do-nothing', 'accelerate', 'deccelerate', 'emergency brake',
+            ylabs = ('do-nothing', 'accelerate', 'deccelerate', 'emergency',
                      'turn')
             for i in range(len(ylabs)):
                 axs[a].axhline(100*self.leader_probs[i], color='k', label='original')
@@ -1265,23 +1290,24 @@ class Experiment:
         plt.tight_layout()
         return axs
 
-    def analyze_behavior(self, agents=None, axs=None, a0=0):
+    def analyze_behavior(self, agents=None, axs=None, a0=0, print_n=False):
         if agents is None: agents = self.agents_names
         if axs is None: axs = utils.Axes(3, 3)
         a = a0
 
-        for metric, lab in zip(
+        for metric, ylab in zip(
                 (self.test_dx, self.test_dvx, self.test_dy), ('dx','dvx','dy')):
-            Q = np.arange(1,101)/100 if lab=='dx' else None
+            Q = np.arange(1,101)/100 if ylab=='dx' else None
             for agent in agents:
                 if agent not in metric:
                     continue
                 x = np.concatenate(metric[agent])
-                utils.plot_quantiles(
-                    x, q=Q, ax=axs[a],
-                    label=f'{agent} (n={len(x)}, mean={np.mean(x):.1f})')
+                lab = f'{agent} (mean={np.mean(x):.1f})'
+                if print_n:
+                    lab = f'{agent} (n={len(x)}, mean={np.mean(x):.1f})'
+                utils.plot_quantiles(x, q=Q, ax=axs[a], label=lab)
             axs[a].set_xlim((0,100))
-            axs.labs(a, 'time-step quantile [%]', lab)
+            axs.labs(a, 'time-step quantile [%]', ylab)
             axs[a].legend(fontsize=13)
             a += 1
 

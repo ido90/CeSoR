@@ -267,6 +267,27 @@ class Experiment:
             self.generate_train_dd(title)
             self.generate_test_dd(title)
 
+    def rename_agent(self, name1, name2):
+        self.dd.loc[self.dd.agent==name1, 'agent'] = name2
+
+        for att in self.__dict__:
+            obj = getattr(E, att)
+            if isinstance(obj, dict) and name1 in obj:
+                obj[name2] = obj[name1]
+                del obj[name1]
+
+        if name2 in self.agents:
+            self.agents[name2].title = name2
+        if name2 in self.optimizers:
+            self.optimizers[name2].title = name2
+        if name2 in self.CEs:
+            self.CEs[name2].title = name2
+
+        for i in range(len(self.agents_names)):
+            if self.agents_names[i]:
+                self.agents_names[i] = name2
+                break
+
     def save_agent(self, agent, nm=None, iter=False):
         if nm is None: nm = agent.title
         if self.title:
@@ -914,7 +935,8 @@ class Experiment:
         fname += '.pkl'
         with open(fname, 'wb') as h:
             pkl.dump((self.dd.copy(), self.valid_scores.copy(),
-                      self.n_test_servers.copy()), h)
+                      self.n_test_servers.copy(),
+                      self.best_train_iteration.copy()), h)
 
         for anm in self.agents_names:
             if agents: self.save_agent(anm)
@@ -925,7 +947,8 @@ class Experiment:
         if fname is None: fname=f'outputs/{self.title}'
         fname += '.pkl'
         with open(fname, 'rb') as h:
-            self.dd, self.valid_scores, self.n_test_servers = pkl.load(h)
+            self.dd, self.valid_scores, self.n_test_servers, \
+            self.best_train_iteration = pkl.load(h)
 
         for anm in self.agents_names:
             if agents: self.load_agent(anm)
