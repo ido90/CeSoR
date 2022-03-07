@@ -34,9 +34,9 @@ class Experiment:
                  optimizer=optim.Adam, optim_freq=400, optim_q_ref=None,
                  cvar=1, soft_cvar=0, optimistic_q=False, no_change_tolerance=10,
                  gamma=1.0, lr=3e-2, lr_gamma=0.5, lr_step=100, weight_decay=0,
-                 state_mode='default', ce_warmup_turns=0,
+                 state_mode='onehot', ce_warmup_turns=0, ce_bernoulli=False,
                  use_ce=False, ce_alpha=0.2, ce_ref_mode='train', ce_ref_alpha=None,
-                 ce_n_orig=None, ce_w_clip=5, ce_constructor=None,
+                 ce_n_orig=None, ce_w_clip=12, ce_constructor=None,
                  log_freq=4000, Ti=1, Tf=1, title=''):
         self.title = title
         self.global_seed = global_seed
@@ -106,6 +106,7 @@ class Experiment:
         self.ce_ref_alpha = ce_ref_alpha
         self.ce_n_orig = ce_n_orig
         self.ce_internal_alpha = ce_alpha
+        self.ce_bernoulli = ce_bernoulli
 
         self.make_env()
         self.generate_test_episodes()
@@ -346,7 +347,8 @@ class Experiment:
             agent_input = observation[:2]
             agent_input[1] *= 3/agent_input[0]
         elif self.state_mode == 'onehot':
-            agent_input = np.concatenate((np.zeros(self.env.M-2), observation[1:2]))
+            agent_input = np.concatenate((np.zeros(self.env.M-2),
+                                          [observation[1]/10]))
             agent_input[int(observation[0])-3] = 1
         elif self.state_mode == 'full':
             agent_input = observation
@@ -505,6 +507,8 @@ class Experiment:
         # get optimization hparams
         optimizer_constructor = get_value('optimizer_constructor')
         lr = get_value('lr')
+        lr_step = get_value('lr_step')
+        lr_gamma = get_value('lr_gamma')
         weight_decay = get_value('weight_decay')
         optim_freq = get_value('optim_freq')
         optim_q_ref = get_value('optim_q_ref')
@@ -523,6 +527,7 @@ class Experiment:
         ref_alpha = get_value('ce_ref_alpha')
         n_orig = get_value('ce_n_orig')
         internal_alpha = get_value('ce_internal_alpha')
+        ce_bernoulli = get_value('ce_bernoulli')
         if update_freq == 0:
             ce_warmup_turns = 0
             n_orig = 0
@@ -535,9 +540,9 @@ class Experiment:
         optimizer = optimizer_constructor(
             agent.parameters(), lr=lr, weight_decay=weight_decay)
         lr_scheduler = None
-        if self.lr_step:
+        if lr_step:
             lr_scheduler = torch.optim.lr_scheduler.StepLR(
-                optimizer, step_size=self.lr_step, gamma=self.lr_gamma)
+                optimizer, step_size=lr_step, gamma=lr_gamma)
         optimizer_wrap = GCVaR.GCVaR(
             optimizer, optim_freq, cvar, cvar_scheduler, skip_steps=ce_warmup_turns,
             optimistic_q=optimistic_q, lr_sched=lr_scheduler, title=agent.title)
@@ -546,6 +551,7 @@ class Experiment:
         # prepare CE
         if ref_alpha is None: ref_alpha = cvar
         ce = self.ce_constructor(
+            bernoulli=ce_bernoulli,
             dist=[self.get_episode_len(), self.event_freq],
             batch_size=int(update_freq * optim_freq), w_clip=w_clip,
             ref_mode=ref_mode, ref_alpha=ref_alpha,
@@ -907,7 +913,8 @@ class Experiment:
         if fname is None: fname=f'outputs/{self.title}'
         fname += '.pkl'
         with open(fname, 'wb') as h:
-            pkl.dump((self.dd.copy(), self.valid_scores.copy()), h)
+            pkl.dump((self.dd.copy(), self.valid_scores.copy(),
+                      self.n_test_servers.copy()), h)
 
         for anm in self.agents_names:
             if agents: self.save_agent(anm)
@@ -918,7 +925,7 @@ class Experiment:
         if fname is None: fname=f'outputs/{self.title}'
         fname += '.pkl'
         with open(fname, 'rb') as h:
-            self.dd, self.valid_scores = pkl.load(h)
+            self.dd, self.valid_scores, self.n_test_servers = pkl.load(h)
 
         for anm in self.agents_names:
             if agents: self.load_agent(anm)
@@ -1022,7 +1029,7 @@ class Experiment:
 
         return ests
 
-    def analyze(self, agents=None, W=3, axsize=(6,4), Qs=(100,5),
+    def analyze(self, agents=None, W=3, axsize=(4.5,3), Qs=(100,5),
                 train_estimators=('mean','cvar05','cvar01'),
                 verify_train_success=False):
         if agents is None: agents = self.agents_names
@@ -1066,9 +1073,11 @@ class Experiment:
                 scores = test_df.score[test_df.agent==agent].values
                 utils.plot_quantiles(
                     scores, q=np.linspace(0,Q/100,101), showmeans=True, ax=axs[a],
-                    label=f'{agent} ({np.mean(scores):.1f})')
-            axs[a].set_xlim((0,Q))
-            axs.labs(a, 'episode quantile [%]', 'score')
+                    label=f'{agent} ({np.mean(scores):.1f} / '
+                          f'{cvar(scores,0.01):.1f})')
+            axs[a].set_ylim((max(axs[a].get_ylim()[0], -40), 0))
+            axs.labs(a, 'episode quantile [%]\n(legend: mean / cvar$_{1\%}$)',
+                     'score')
             axs[a].legend(fontsize=13)
             a += 1
 
@@ -1084,7 +1093,7 @@ class Experiment:
             n_servers = self.n_test_servers[agent]
             utils.plot_quantiles(
                 n_servers, showmeans=True, ax=axs[a],
-                label=f'{agent} ({np.mean(n_servers):.1f})')
+                label=f'{agent} (mean={np.mean(n_servers):.1f})')
         axs.labs(a, 'quantile [%]', 'active servers')
         axs[a].legend(fontsize=13)
         a += 1
@@ -1139,7 +1148,7 @@ class Experiment:
         plt.tight_layout()
         return axs
 
-    def show_tests(self, agents=None, n=3, axs=None, **kwargs):
+    def show_tests(self, agents=None, n=3, axs=None, axs2=None, **kwargs):
         if agents is None: agents = self.agents_names
         if isinstance(agents, str): agents = [agents]
 
@@ -1148,6 +1157,7 @@ class Experiment:
         plt.tight_layout()
         a = 0
 
+        d, N = None, None
         for agent in agents:
             d = self.dd[(self.dd.agent == agent) & (self.dd.group == 'test')]
             d = d.sort_values('score')
@@ -1167,6 +1177,43 @@ class Experiment:
                 a += 6
 
         plt.tight_layout()
+
+        # analyze all agents together
+        if axs2 is None:
+            axs2 = utils.Axes(n, min(n, 3), (6,3.5), fontsize=16)
+        d = d.sort_values('n_events')
+        qs = np.linspace(0, 1, n)
+        ids = ((N-1)*qs).astype(int)
+        episodes = d.episode.values[ids]
+        for a, ep in enumerate(episodes):
+            self.analyze_episode(ep, agents, axs=axs2, a=a, **kwargs)
+
+        return axs, axs2
+
+    def analyze_episode(self, episode, agents=None, group='test', resolution=10,
+                        show_tot=False, axs=None, a=0, **kwargs):
+        if agents is None: agents = self.agents_names
+        if axs is None: axs = utils.Axes(1, 1, (6,3.5), fontsize=16)
+
+        rr = pd.DataFrame()
+        for agent in agents:
+            s, _, _, T = self.run_episode(
+                (agent, group, episode), self.agents[agent],
+                update_res=False, verbose=0, **kwargs)
+            r = self.env.get_all_rewards(resolution=resolution)
+            tts_cost, servers_cost = self.env.get_total_cost(detailed=True)
+            r['agent'] = f'{agent}: {tts_cost:.0f}+{servers_cost:.0f}=' \
+                         f'{servers_cost+tts_cost:.0f}'
+            if not show_tot:
+                r = r[r.cost_type!='total']
+                r = pd.concat((r[r.cost_type=='tts'], r[r.cost_type=='servers']))
+            rr = pd.concat((rr, r))
+
+        sns.lineplot(data=rr, x='t', hue='agent', style='cost_type', y='cost',
+                     ci=None, ax=axs[a])
+        axs.labs(a, 't', 'cost')
+        axs[a].legend(fontsize=12)
+
         return axs
 
     def main(self, **analysis_args):
@@ -1176,16 +1223,26 @@ class Experiment:
 
 
 class CEM_Servers(CEM.CEM):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, bernoulli=False, *args, **kwargs):
         super(CEM_Servers, self).__init__(*args, **kwargs)
+        self.bernoulli = bernoulli
         self.default_dist_titles = ('tot_seconds', 'event_freq')
 
     def do_sample(self, dist):
-        return np.random.binomial(*dist)
+        if self.bernoulli:
+            # for p<<1/n, P(at least one event) = 1-(1-p)^n ~ np
+            p = min(dist[0] * dist[1], 1)
+            return int(np.random.random() < p)
+        else:
+            return np.random.binomial(*dist)
 
     def pdf(self, x, dist):
-        # should I use sterling approximation instead?
-        return stats.binom.pmf(x, *dist)
+        if self.bernoulli:
+            p = min(dist[0] * dist[1], 1)
+            return p if x>0.5 else 1-p
+        else:
+            # should I use sterling approximation instead?
+            return stats.binom.pmf(x, *dist)
 
     def update_sample_distribution(self, samples, weights):
         w = np.array(weights)

@@ -11,7 +11,9 @@ Written by Ido Greenberg, 2022.
 '''
 
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 from gym import core, spaces
 from gym.utils import seeding
 import utils
@@ -23,7 +25,7 @@ DAY = 24*HOUR
 class ServersSim(core.Env):
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, seed=None, max_servers=10, min_servers=3, init_servers=5,
+    def __init__(self, seed=None, max_servers=10, min_servers=3, init_servers=4,
                  T=HOUR, dt=1, act_freq=MINUTE, upload_len=2*MINUTE, req_len=1,
                  rate1=3, rate2=6, event_len=5*MINUTE, event_freq=1/(3*DAY),
                  tts_cost=1, server_cost=2, tts_on_assignment=True):
@@ -39,6 +41,7 @@ class ServersSim(core.Env):
         self.act_freq = act_freq  # decision-making turns frequency
         self.upload_len = upload_len  # time for a new server to be uploaded
         self.req_len = req_len  # average time to handle a request
+        self.req_len_buffer = 10000  # how many request lengths to draw in advance
         self.rate1 = rate1  # default rate of requests arrival
         self.rate2 = rate2  # peak rate of requests arrival
         self.event_len = event_len  # duration of peaks (inverse exp. decay rate)
@@ -69,6 +72,7 @@ class ServersSim(core.Env):
         self.remaining_work = np.zeros(self.M)
         self.next_request = 0
         self.events = None
+        self.request_lengths = None
 
         # Recording
         self.n_servers_paid = []  # T
@@ -107,6 +111,8 @@ class ServersSim(core.Env):
         self.arrival_time_per_server = -np.ones(self.M)
         self.remaining_work = np.zeros(self.M)
         self.next_request = 0
+        self.request_lengths = self.rng.exponential(
+            self.req_len, self.req_len_buffer)
 
         # Recording
         self.n_servers_paid = []  # T
@@ -126,7 +132,7 @@ class ServersSim(core.Env):
 
     def get_obs(self):
         return np.concatenate((
-            [self.m, self.queue_len/self.rate1/10],
+            [self.m, self.queue_len/self.rate1],
             self.time_to_active/self.upload_len))
 
     def get_total_cost(self, detailed=False, cvar=0):
@@ -255,8 +261,10 @@ class ServersSim(core.Env):
         self.arrival_time_per_server[i] = self.arrival_times[self.next_request]
         self.next_request += 1
         self.queue_len -= 1
-        # TODO expensive - consider doing randomization in batches
-        self.remaining_work[i] = self.rng.exponential(self.req_len)
+        # Request lengths are drawn in advance since np.random.exponential()
+        #  is MUCH more efficient when done in a batch.
+        self.remaining_work[i] = self.request_lengths[
+            self.next_request % self.req_len_buffer]
         if self.tts_on_assignment:
             # TODO expensive - consider allocating a long list in advance
             self.tts.append(self.t+time_spent - self.arrival_time_per_server[i])
@@ -320,11 +328,64 @@ class ServersSim(core.Env):
                  f'Mean={mean:.0f}, $CVaR_{{1\%}}$={cvar1:.0f}')
         a += 1
 
-        tts_cost = self.tts_cost * np.sum(self.tts) / self.T
-        servers_cost = self.server_cost * np.sum(self.n_servers_paid) / self.T
-        axs[a].bar(('tts', 'servers'), (tts_cost, servers_cost))
-        axs.labs(a, 'source', 'loss', f'{tts_cost:.0f} + {servers_cost:.0f} '
-                                      f'= {tts_cost+servers_cost:.0f}')
+        self.show_episode_cost(axs, a, detailed=True)
+        a += 1
 
         plt.tight_layout()
         return axs
+
+    def show_episode_cost(self, axs=None, a=0, detailed=True):
+        if axs is None: axs = utils.Axes(1,1)
+        tts_cost, servers_cost = self.get_total_cost(detailed=True)
+        if detailed:
+            rr = self.get_all_rewards()
+            sns.lineplot(data=rr, x='t', hue='cost_type', y='cost',
+                         ci=None, ax=axs[a])
+            axs.labs(a, 't', 'cost', f'{servers_cost:.0f} + {tts_cost:.0f} '
+                                     f'= {servers_cost+tts_cost:.0f}')
+        else:
+            axs[a].bar(('servers', 'tts'), (servers_cost, tts_cost))
+            axs.labs(a, 'source', 'loss', f'{servers_cost:.0f} + {tts_cost:.0f} '
+                                          f'= {servers_cost+tts_cost:.0f}')
+
+    def get_all_rewards(self, resolution=1):
+        servers_cost_det = self.server_cost * np.array(self.n_servers_paid)
+        tts_cost_det = self.tts_cost * np.array(self.tts)
+
+        def agg(r):
+            if resolution > 1:
+                r['t_round'] = r.t // resolution * resolution
+                r = r.groupby(['cost_type','t_round']).apply(lambda d: d.cost.mean())
+                r = pd.DataFrame(dict(
+                    t = [i[1] for i in r.index.values],
+                    cost_type = [i[0] for i in r.index.values],
+                    cost = r.values,
+                ))
+            return r
+
+        rr_servers = pd.DataFrame(dict(
+            t = np.arange(len(self.n_servers_paid)),
+            cost_type = 'servers',
+            cost = servers_cost_det,
+        ))
+
+        rr_tts = pd.DataFrame(dict(
+            t = self.arrival_times,
+            cost = tts_cost_det,
+        ))
+        rr_tts = rr_tts.groupby('t').apply(lambda d: np.sum(d.cost))
+        rr_tts = pd.DataFrame(dict(
+            t = rr_tts.index.values,
+            cost_type = 'tts',
+            cost = rr_tts.values,
+        ))
+
+        rr_tot = pd.concat((rr_servers, rr_tts)).groupby('t').apply(
+            lambda d: d.cost.sum())
+        rr_tot = pd.DataFrame(dict(
+            t = rr_tot.index.values,
+            cost_type = 'total',
+            cost = rr_tot.values,
+        ))
+
+        return agg(pd.concat((rr_tot, rr_servers, rr_tts)))
