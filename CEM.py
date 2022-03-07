@@ -44,9 +44,9 @@ Written by Ido Greenberg, 2022.
 import numpy as np
 from scipy import stats
 import pandas as pd
+import matplotlib.pyplot as plt
 import pickle as pkl
 import copy, warnings
-import utils
 
 
 class CEM:
@@ -357,7 +357,9 @@ class CEM:
         return d1, d2
 
     def show_sampled_scores(self, ax=None, ylab=None):
-        if ax is None: ax = utils.Axes(1,1)[0]
+        if ax is None:
+            ax = plt.subplots(1, 1, figsize=(5,3.5))[1]
+            ax.grid(color='k', linestyle=':', linewidth=0.3)
         if ylab is None:
             ylab = 'score'
         cvar = lambda x, alpha: np.mean(np.sort(x)[:int(np.ceil(alpha*len(x)))])
@@ -375,7 +377,8 @@ class CEM:
         ax.plot(cvar_orig, label=f'Reference / CVaR$_{{{100*self.ref_alpha:.0f}\%}}$')
         ax.plot(mean_samp, label='Sample / mean')
         ax.plot(cvar_samp, label=f'Sample / CVaR$_{{{100*self.ref_alpha:.0f}\%}}$')
-        utils.labels(ax, 'iteration', ylab, fontsize=15)
+        ax.set_xlabel('iteration', fontsize=15)
+        ax.set_ylabel(ylab, fontsize=15)
         ax.legend(fontsize=14)
         return ax
 
