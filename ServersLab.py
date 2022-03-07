@@ -1216,7 +1216,6 @@ class Experiment:
         episodes = d.episode.values[ids]
         for a, ep in enumerate(episodes):
             self.analyze_episode(ep, agents, axs=axs2, a=a, **kwargs)
-            axs2[a].legend(fontsize=11)
         plt.tight_layout()
 
         return axs, axs2
@@ -1233,6 +1232,7 @@ class Experiment:
                 update_res=False, verbose=0, **kwargs)
             r = self.env.get_all_rewards(resolution=resolution)
             tts_cost, servers_cost = self.env.get_total_cost(detailed=True)
+            tts_cost, servers_cost = np.round(tts_cost), np.round(servers_cost)
             r['agent'] = f'{agent}: {tts_cost:.0f}+{servers_cost:.0f}=' \
                          f'{servers_cost+tts_cost:.0f}'
             if not show_tot:
