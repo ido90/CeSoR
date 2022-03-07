@@ -304,7 +304,7 @@ class Experiment:
         self.dd.loc[self.dd.agent==name1, 'agent'] = name2
 
         for att in self.__dict__:
-            obj = getattr(E, att)
+            obj = getattr(self, att)
             if isinstance(obj, dict) and name1 in obj:
                 obj[name2] = obj[name1]
                 del obj[name1]

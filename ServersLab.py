@@ -271,7 +271,7 @@ class Experiment:
         self.dd.loc[self.dd.agent==name1, 'agent'] = name2
 
         for att in self.__dict__:
-            obj = getattr(E, att)
+            obj = getattr(self, att)
             if isinstance(obj, dict) and name1 in obj:
                 obj[name2] = obj[name1]
                 del obj[name1]
@@ -1209,20 +1209,22 @@ class Experiment:
 
         # analyze all agents together
         if axs2 is None:
-            axs2 = utils.Axes(n, min(n, 3), (6,3.5), fontsize=16)
+            axs2 = utils.Axes(n, min(n, 3), (4.5,3), fontsize=15)
         d = d.sort_values('n_events')
         qs = np.linspace(0, 1, n)
         ids = ((N-1)*qs).astype(int)
         episodes = d.episode.values[ids]
         for a, ep in enumerate(episodes):
             self.analyze_episode(ep, agents, axs=axs2, a=a, **kwargs)
+            axs2[a].legend(fontsize=11)
+        plt.tight_layout()
 
         return axs, axs2
 
     def analyze_episode(self, episode, agents=None, group='test', resolution=10,
                         show_tot=False, axs=None, a=0, **kwargs):
         if agents is None: agents = self.agents_names
-        if axs is None: axs = utils.Axes(1, 1, (6,3.5), fontsize=16)
+        if axs is None: axs = utils.Axes(1, 1, (4.5,3), fontsize=15)
 
         rr = pd.DataFrame()
         for agent in agents:
@@ -1237,6 +1239,7 @@ class Experiment:
                 r = r[r.cost_type!='total']
                 r = pd.concat((r[r.cost_type=='tts'], r[r.cost_type=='servers']))
             rr = pd.concat((rr, r))
+        rr.reset_index(drop=True, inplace=True)
 
         sns.lineplot(data=rr, x='t', hue='agent', style='cost_type', y='cost',
                      ci=None, ax=axs[a])

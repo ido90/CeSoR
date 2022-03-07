@@ -388,4 +388,7 @@ class ServersSim(core.Env):
             cost = rr_tot.values,
         ))
 
-        return agg(pd.concat((rr_tot, rr_servers, rr_tts)))
+        rr = agg(pd.concat((rr_tot, rr_servers, rr_tts)))
+        rr.reset_index(drop=True, inplace=True)
+
+        return rr
