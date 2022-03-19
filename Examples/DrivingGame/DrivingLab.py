@@ -659,7 +659,7 @@ class Experiment:
 
         self.T = Ti
         self.L = int(L_init)
-        ce.original_dist[-1] = np.ceil(self.L/1.5)
+        ce.sample_dist[0][-1] = np.ceil(self.L/1.5)
         ce.sample_dist[-1][-1] = np.ceil(self.L/1.5)
         self.valid_scores[agent_nm] = [
             self.test(agent_nm, 'valid', update_inplace=False, temperature=0,
@@ -704,7 +704,7 @@ class Experiment:
                 self.T = Ti + (Tf-Ti) * i/len(ids)
                 self.L = int(L_init + (self.max_episode_len-L_init) * min(
                     1.*i, 0.5*len(ids)) / (0.5*len(ids)) )
-                ce.original_dist[-1] = np.ceil(self.L/1.5)
+                ce.sample_dist[0][-1] = np.ceil(self.L/1.5)
                 ce.sample_dist[-1][-1] = np.ceil(self.L/1.5)
 
                 # validation
