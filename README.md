@@ -6,6 +6,10 @@ This repo by Ido Greenberg implements the *Cross-entropy Soft-Risk* optimization
 | :--: |
 | Summary of the results of 3 agents (risk-neutral PG, standard risk-averse [GCVaR](https://arxiv.org/abs/1404.3862), and our CeSoR) over 3 benchmarks. Top: the lower quantiles of the agent scores. Bottom: sample episodes. |
 
+| <img src="https://github.com/ido90/CrossEntropySampler/blob/main/Images/CeSoR_driving_sample.gif" width="280"> |
+| :--: |
+| A sample episode of CeSoR in the Driving Game. The goal is to follow the leader as closely as possible without colliding. |
+
 ## Installation
 `pip install -e .`
 
