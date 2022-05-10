@@ -1,6 +1,6 @@
 # Efficient Risk-Averse Reinforcement Learning
 
-This repo by Ido Greenberg implements the *Cross-entropy Soft-Risk* optimization algorithm (***CeSoR***) from the paper [Efficient Risk-Averse Reinforcement Learning]() by Greenberg and Mannor.
+This repo by Ido Greenberg implements the *Cross-entropy Soft-Risk* optimization algorithm (***CeSoR***) from the paper [Efficient Risk-Averse Reinforcement Learning]() by Greenberg, Chow, Ghavamzadeh and Mannor.
 
 | <img src="https://github.com/ido90/CrossEntropySampler/blob/main/Images/CeSoR_results_summary.png" width="720"> |
 | :--: |
