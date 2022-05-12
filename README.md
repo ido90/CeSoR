@@ -1,6 +1,6 @@
 # Efficient Risk-Averse Reinforcement Learning
 
-This repo by Ido Greenberg implements the *Cross-entropy Soft-Risk* optimization algorithm (***CeSoR***) from the paper [Efficient Risk-Averse Reinforcement Learning]() by Greenberg, Chow, Ghavamzadeh and Mannor.
+This repo by Ido Greenberg implements the *Cross-entropy Soft-Risk* optimization algorithm (***CeSoR***) from the paper [Efficient Risk-Averse Reinforcement Learning](https://arxiv.org/abs/2205.05138) by Greenberg, Chow, Ghavamzadeh and Mannor.
 
 | <img src="https://github.com/ido90/CrossEntropySampler/blob/main/Images/CeSoR_results_summary.png" width="720"> |
 | :--: |
@@ -20,8 +20,8 @@ This repo by Ido Greenberg implements the *Cross-entropy Soft-Risk* optimization
 ## Background
 In risk-averse Reinforcement Learning (RL), the goal is to optimize some risk-measure of the returns, which inherently focuses on the lower quantiles of the returns distribution.
 This poses two difficulties: first, by focusing on certain quantiles we ignore some of the agent experience and thus reduce the sample efficiency. Second, ignoring the higher quantiles specifically leads to *blindness to success*: the optimizer is not exposed at all to beneficial behaviors of the agent.
-To overcome these challenges, we present *CeSoR* - Cross-entropy Soft-Risk optimization algorithm. CeSoR leverages the Cross Entropy method to sample the lower quantiles over the environment conditions (minimizing over *epistemic* uncertainty); while using soft risk-level scheduling to expose the optimizer to the higher quantiles of the agent performance (miximizing over *aleatoric* uncertainty).
-CeSoR works on top of the standard policy gradient algorithm and can be applied to various models including neural networks.
+To overcome these challenges, we present *CeSoR* - Cross-entropy Soft-Risk optimization algorithm. CeSoR leverages the Cross Entropy method to sample the lower quantiles over the environment conditions (minimizing over *epistemic* uncertainty); while using soft risk-level scheduling to expose the optimizer to the higher quantiles of the agent performance (maximizing over *aleatoric* uncertainty).
+CeSoR can be applied to various models (e.g., neural networks), on top of any existing policy gradient algorithm for CVaR.
 On benchmarks of maze navigation, autonomous driving and computational resources allocation, we show that CeSoR achieves better risk-measures than standard methods of both risk-neutral and risk-averse policy gradient, and sometimes works even when the standard risk-averse policy gradient completely fails.
 
 ## Algorithm
