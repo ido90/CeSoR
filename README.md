@@ -2,6 +2,8 @@
 
 This repo by Ido Greenberg implements the *Cross-entropy Soft-Risk* optimization algorithm (***CeSoR***) from the paper [Efficient Risk-Averse Reinforcement Learning](https://arxiv.org/abs/2205.05138) by Greenberg, Chow, Ghavamzadeh and Mannor.
 
+Also see the related [cross-entropy-method](https://pypi.org/project/cross-entropy-method/) PyPI package.
+
 | <img src="https://github.com/ido90/CrossEntropySampler/blob/main/Images/CeSoR_results_summary.png" width="720"> |
 | :--: |
 | Summary of the results of 3 agents (risk-neutral PG, standard risk-averse [GCVaR](https://arxiv.org/abs/1404.3862), and our CeSoR) over 3 benchmarks. Top: the lower quantiles of the agent scores. Bottom: sample episodes. |
