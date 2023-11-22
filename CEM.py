@@ -155,8 +155,12 @@ class CEM:
             self.ref_quantile, self.internal_quantile, self.selected_samples,
             self.n_update_samples
         )
-        with open(filename, 'wb') as h:
-            pkl.dump(obj, h)
+        try:
+            with open(filename, 'wb') as h:
+                pkl.dump(obj, h)
+        except:
+            print(f'Cannot save CEM logs to {filename}. Maybe the directory does not exist?')
+            raise
 
     def load(self, filename=None):
         if filename is None: filename = f'models/{self.title}'
